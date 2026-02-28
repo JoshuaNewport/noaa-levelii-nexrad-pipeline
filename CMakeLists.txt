@@ -79,8 +79,6 @@ target_include_directories(levelii_AWSInitializer PUBLIC
 
 target_link_libraries(levelii_AWSInitializer PUBLIC
     aws-cpp-sdk-s3
-    aws-cpp-sdk-sns
-    aws-cpp-sdk-sqs
     aws-cpp-sdk-core
 )
 
