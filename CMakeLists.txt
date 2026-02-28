@@ -11,7 +11,7 @@ option(ENABLE_TESTING "Build test executables" OFF)
 find_package(CURL REQUIRED)
 find_package(BZip2 REQUIRED)
 find_package(ZLIB REQUIRED)
-find_package(AWSSDK REQUIRED COMPONENTS s3 sns sqs core)
+find_package(AWSSDK REQUIRED COMPONENTS s3 core)
 
 # ============================================================================
 # Level II Decompression Utilities Library
@@ -165,8 +165,6 @@ target_link_libraries(nexrad_pipeline PRIVATE
     ${BZIP2_LIBRARIES}
     ZLIB::ZLIB
     aws-cpp-sdk-s3
-    aws-cpp-sdk-sns
-    aws-cpp-sdk-sqs
     aws-cpp-sdk-core
     pthread
 )
