@@ -7,6 +7,8 @@
 ### Overview
 A high-performance C++ service for real-time fetching, decompressing, and processing NEXRAD Level II radar data from NOAA's public S3 buckets. Supports both 2D tilt-based and 3D volumetric output formats with bitmasked quantization.
 
+![Pipeline Diagram](./docs/images/pipeline_diagram.png)
+
 ### Features
 - High-efficiency S3-based discovery of new radar frames.
 - High-throughput multi-threaded processing with pre-allocated buffer pools.
