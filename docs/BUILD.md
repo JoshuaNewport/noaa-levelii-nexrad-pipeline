@@ -72,8 +72,8 @@ You should see directories such as:
 
 1. **Clone the repository**:
 
-    git clone <https://github.com/JoshuaNewport/noaa-levelii-nexrad-pipeline>
-    cd noaa-levelii-nexrad-pipeline
+    git clone <https://github.com/JoshuaNewport/nexrad-levelii-pipeline>
+    cd nexrad-levelii-pipeline
 
 2. **Configure and Build**:
 
