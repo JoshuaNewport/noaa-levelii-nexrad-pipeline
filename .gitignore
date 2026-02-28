@@ -4,7 +4,6 @@ bin/
 *.o
 *.a
 *.so
-CMakeLists.txt
 
 # Data storage
 data/
