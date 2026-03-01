@@ -29,6 +29,22 @@ FrameStorageManager::FrameStorageManager(const std::string& base_path)
     : base_path_(base_path) {
     ensure_directory_exists(base_path_);
     
+    // Initial scan to populate statistics
+    size_t usage = 0;
+    int count = 0;
+    if (fs::exists(base_path_)) {
+        for (const auto& entry : fs::recursive_directory_iterator(base_path_)) {
+            if (entry.is_regular_file()) {
+                usage += entry.file_size();
+                if (entry.path().extension() == ".RDA") {
+                    count++;
+                }
+            }
+        }
+    }
+    total_disk_usage_.store(usage);
+    total_frame_count_.store(count);
+    
     async_storage_running_.store(true);
     async_storage_stop_.store(false);
     storage_thread_ = std::thread([this]() { this->async_storage_loop(); });
@@ -164,10 +180,21 @@ bool FrameStorageManager::save_frame_bitmask(const std::string& station, const s
     oss << std::fixed << std::setprecision(1) << tilt << ".RDA";
     std::string file_path = dir + "/" + oss.str();
     
+    bool existed = fs::exists(file_path);
+    size_t old_size = existed ? fs::file_size(file_path) : 0;
+    
     std::ofstream file(file_path, std::ios::binary);
     if (!file.is_open()) return false;
     file.write(reinterpret_cast<const char*>(compressed.data()), compressed.size());
     file.close();
+    
+    {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        if (!existed) {
+            total_frame_count_++;
+        }
+        total_disk_usage_ += (compressed.size() - old_size);
+    }
     
     update_index(station, product);
     return true;
@@ -270,10 +297,21 @@ bool FrameStorageManager::save_volumetric_bitmask(const std::string& station, co
     
     std::string file_path = dir + "/volumetric.RDA";
     
+    bool existed = fs::exists(file_path);
+    size_t old_size = existed ? fs::file_size(file_path) : 0;
+    
     std::ofstream file(file_path, std::ios::binary);
     if (!file.is_open()) return false;
     file.write(reinterpret_cast<const char*>(compressed.data()), compressed.size());
     file.close();
+    
+    {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        if (!existed) {
+            total_frame_count_++;
+        }
+        total_disk_usage_ += (compressed.size() - old_size);
+    }
     
     update_index(station, product);
     return true;
@@ -382,9 +420,119 @@ void FrameStorageManager::cleanup_old_frames(int max_frames_per_station) {
             std::sort(timestamps.rbegin(), timestamps.rend());
             if (timestamps.size() > static_cast<size_t>(max_frames_per_station)) {
                 for (size_t i = max_frames_per_station; i < timestamps.size(); ++i) {
-                    fs::remove_all(station_entry.path().string() + "/" + timestamps[i] + "/" + prod);
+                    std::string prod_dir = station_entry.path().string() + "/" + timestamps[i] + "/" + prod;
+                    if (fs::exists(prod_dir)) {
+                        size_t removed_usage = 0;
+                        int removed_count = 0;
+                        for (const auto& entry : fs::recursive_directory_iterator(prod_dir)) {
+                            if (entry.is_regular_file()) {
+                                removed_usage += entry.file_size();
+                                if (entry.path().extension() == ".RDA") {
+                                    removed_count++;
+                                }
+                            }
+                        }
+                        fs::remove_all(prod_dir);
+                        {
+                            std::lock_guard<std::mutex> lock(stats_mutex_);
+                            total_disk_usage_ -= removed_usage;
+                            total_frame_count_ -= removed_count;
+                        }
+                        
+                        // Cleanup empty parent timestamp directory
+                        fs::path ts_dir = fs::path(prod_dir).parent_path();
+                        if (fs::exists(ts_dir) && fs::is_directory(ts_dir) && fs::is_empty(ts_dir)) {
+                            fs::remove(ts_dir);
+                        }
+                    }
                 }
                 update_index(station_entry.path().filename().string(), prod);
+            }
+        }
+        
+        // Cleanup empty station directory (no timestamp directories left)
+        bool has_timestamp_dirs = false;
+        for (const auto& entry : fs::directory_iterator(station_entry)) {
+            if (entry.is_directory()) {
+                has_timestamp_dirs = true;
+                break;
+            }
+        }
+        
+        if (!has_timestamp_dirs) {
+            for (const auto& entry : fs::directory_iterator(station_entry)) {
+                if (entry.is_regular_file()) {
+                    fs::remove(entry.path());
+                }
+            }
+            if (fs::is_empty(station_entry)) {
+                fs::remove(station_entry);
+            }
+        }
+    }
+}
+
+void FrameStorageManager::cleanup_old_frames_by_age(int max_age_minutes) {
+    if (!fs::exists(base_path_)) return;
+    
+    auto now = std::chrono::system_clock::now();
+    auto max_age = std::chrono::minutes(max_age_minutes);
+    
+    for (const auto& station_entry : fs::directory_iterator(base_path_)) {
+        if (!station_entry.is_directory()) continue;
+        
+        for (const auto& ts_entry : fs::directory_iterator(station_entry)) {
+            if (!ts_entry.is_directory()) continue;
+            
+            std::string timestamp = ts_entry.path().filename().string();
+            // Expected format: YYYYMMDD_HHMMSS
+            if (timestamp.size() < 15) continue;
+            
+            try {
+                std::tm tm = {};
+                std::istringstream ss(timestamp);
+                ss >> std::get_time(&tm, "%Y%m%d_%H%M%S");
+                if (ss.fail()) continue;
+                
+                auto ts_time = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+                if (now - ts_time > max_age) {
+                    size_t removed_usage = 0;
+                    int removed_count = 0;
+                    for (const auto& entry : fs::recursive_directory_iterator(ts_entry.path())) {
+                        if (entry.is_regular_file()) {
+                            removed_usage += entry.file_size();
+                            if (entry.path().extension() == ".RDA") {
+                                removed_count++;
+                            }
+                        }
+                    }
+                    fs::remove_all(ts_entry.path());
+                    {
+                        std::lock_guard<std::mutex> lock(stats_mutex_);
+                        total_disk_usage_ -= removed_usage;
+                        total_frame_count_ -= removed_count;
+                    }
+                }
+            } catch (...) {}
+        }
+        
+        // Cleanup empty station directory (no timestamp directories left)
+        bool has_timestamp_dirs = false;
+        for (const auto& entry : fs::directory_iterator(station_entry)) {
+            if (entry.is_directory()) {
+                has_timestamp_dirs = true;
+                break;
+            }
+        }
+        
+        if (!has_timestamp_dirs) {
+            for (const auto& entry : fs::directory_iterator(station_entry)) {
+                if (entry.is_regular_file()) {
+                    fs::remove(entry.path());
+                }
+            }
+            if (fs::is_empty(station_entry)) {
+                fs::remove(station_entry);
             }
         }
     }
@@ -396,24 +544,9 @@ bool FrameStorageManager::has_timestamp_product(const std::string& station, cons
 }
 
 size_t FrameStorageManager::get_total_disk_usage() const {
-    size_t total = 0;
-    if (fs::exists(base_path_)) {
-        for (const auto& entry : fs::recursive_directory_iterator(base_path_)) {
-            if (entry.is_regular_file()) total += entry.file_size();
-        }
-    }
-    return total;
+    return total_disk_usage_.load();
 }
 
 int FrameStorageManager::get_frame_count() const {
-    int count = 0;
-    if (fs::exists(base_path_)) {
-        for (const auto& entry : fs::recursive_directory_iterator(base_path_)) {
-            if (entry.is_regular_file()) {
-                std::string ext = entry.path().extension().string();
-                if (ext == ".RDA") count++;
-            }
-        }
-    }
-    return count;
+    return total_frame_count_.load();
 }

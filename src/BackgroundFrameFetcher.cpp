@@ -239,29 +239,39 @@ void BackgroundFrameFetcher::discovery_loop() {
             if (s3_client) {
                 auto now = std::chrono::system_clock::now();
                 std::time_t t_now = std::chrono::system_clock::to_time_t(now);
-                std::tm utc_tm;
+                std::time_t t_yesterday = t_now - (24 * 60 * 60);
+                
+                std::tm utc_tm, yest_tm;
                 gmtime_r(&t_now, &utc_tm);
+                gmtime_r(&t_yesterday, &yest_tm);
 
-                char day_prefix[32];
-                std::snprintf(day_prefix, sizeof(day_prefix), "%04d/%02d/%02d/",
+                std::vector<std::string> prefixes;
+                char buf[32];
+                std::snprintf(buf, sizeof(buf), "%04d/%02d/%02d/",
+                              yest_tm.tm_year + 1900, yest_tm.tm_mon + 1, yest_tm.tm_mday);
+                prefixes.push_back(buf);
+                std::snprintf(buf, sizeof(buf), "%04d/%02d/%02d/",
                               utc_tm.tm_year + 1900, utc_tm.tm_mon + 1, utc_tm.tm_mday);
+                prefixes.push_back(buf);
 
-                Aws::S3::Model::ListObjectsV2Request list_req;
-                list_req.WithBucket(NEXRAD_BUCKET).WithPrefix(day_prefix).WithDelimiter("/");
+                for (const auto& day_prefix : prefixes) {
+                    Aws::S3::Model::ListObjectsV2Request list_req;
+                    list_req.WithBucket(NEXRAD_BUCKET).WithPrefix(day_prefix).WithDelimiter("/");
 
-                auto list_outcome = s3_client->ListObjectsV2(list_req);
-                if (list_outcome.IsSuccess()) {
-                    for (const auto& prefix : list_outcome.GetResult().GetCommonPrefixes()) {
-                        std::string p = prefix.GetPrefix();
-                        // Prefix is "YYYY/MM/DD/STATION/"
-                        size_t last_slash = p.find_last_of('/', p.size() - 2);
-                        if (last_slash != std::string::npos) {
-                            std::string station = p.substr(last_slash + 1, p.size() - last_slash - 2);
-                            stations.insert(station);
+                    auto list_outcome = s3_client->ListObjectsV2(list_req);
+                    if (list_outcome.IsSuccess()) {
+                        for (const auto& prefix : list_outcome.GetResult().GetCommonPrefixes()) {
+                            std::string p = prefix.GetPrefix();
+                            // Prefix is "YYYY/MM/DD/STATION/"
+                            size_t last_slash = p.find_last_of('/', p.size() - 2);
+                            if (last_slash != std::string::npos) {
+                                std::string station = p.substr(last_slash + 1, p.size() - last_slash - 2);
+                                stations.insert(station);
+                            }
                         }
                     }
-                    stations.erase("ALL"); // Don't try to scan "ALL" as a station
                 }
+                stations.erase("ALL"); // Don't try to scan "ALL" as a station
             }
         }
         
@@ -589,12 +599,20 @@ void BackgroundFrameFetcher::fetch_frame_for_station(const std::string& station)
     try {
         auto now = std::chrono::system_clock::now();
         std::time_t t_now = std::chrono::system_clock::to_time_t(now);
-        std::tm utc_tm;
-        gmtime_r(&t_now, &utc_tm);
+        std::time_t t_yesterday = t_now - (24 * 60 * 60);
 
-        char date_prefix[64];
-        std::snprintf(date_prefix, sizeof(date_prefix), "%04d/%02d/%02d/%s/",
+        std::tm utc_tm, yest_tm;
+        gmtime_r(&t_now, &utc_tm);
+        gmtime_r(&t_yesterday, &yest_tm);
+
+        std::vector<std::string> prefixes;
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%04d/%02d/%02d/%s/",
+                      yest_tm.tm_year + 1900, yest_tm.tm_mon + 1, yest_tm.tm_mday, station.c_str());
+        prefixes.push_back(buf);
+        std::snprintf(buf, sizeof(buf), "%04d/%02d/%02d/%s/",
                       utc_tm.tm_year + 1900, utc_tm.tm_mon + 1, utc_tm.tm_mday, station.c_str());
+        prefixes.push_back(buf);
 
         std::string last_key;
         {
@@ -602,19 +620,23 @@ void BackgroundFrameFetcher::fetch_frame_for_station(const std::string& station)
             last_key = station_stats_[station].last_processed_key;
         }
 
-        ListObjectsV2Request list_req;
-        list_req.WithBucket(NEXRAD_BUCKET).WithPrefix(date_prefix);
-        if (!last_key.empty()) {
-            list_req.WithStartAfter(last_key);
+        std::vector<Aws::S3::Model::Object> objects;
+        for (const auto& date_prefix : prefixes) {
+            ListObjectsV2Request list_req;
+            list_req.WithBucket(NEXRAD_BUCKET).WithPrefix(date_prefix);
+            if (!last_key.empty()) {
+                list_req.WithStartAfter(last_key);
+            }
+
+            auto list_outcome = s3_client->ListObjectsV2(list_req);
+            if (list_outcome.IsSuccess()) {
+                auto contents = list_outcome.GetResult().GetContents();
+                objects.insert(objects.end(), contents.begin(), contents.end());
+            } else {
+                this->log_error("Failed to list S3 objects for " + station + " (" + date_prefix + "): " + list_outcome.GetError().GetMessage());
+            }
         }
 
-        auto list_outcome = s3_client->ListObjectsV2(list_req);
-        if (!list_outcome.IsSuccess()) {
-            this->log_error("Failed to list S3 objects for " + station + ": " + list_outcome.GetError().GetMessage());
-            return;
-        }
-
-        auto objects = list_outcome.GetResult().GetContents();
         if (objects.empty()) return;
 
         // Sort by key (which is chronological for NEXRAD)

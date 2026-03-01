@@ -12,7 +12,12 @@ void VolumetricGenerator::generate_volumetric_3d(RadarFrame& frame) {
     }
     
     frame.volumetric_3d.clear();
-    frame.volumetric_3d.reserve(1000000);
+    
+    size_t total_potential_bins = 0;
+    for (const auto& sweep : frame.sweeps) {
+        total_potential_bins += sweep.bins.size() / 3;
+    }
+    frame.volumetric_3d.reserve(total_potential_bins * 4);
     
     const float RE = 6371000.0f;  // Earth radius in meters
     const float IR = 4.0f / 3.0f; // 4/3 earth radius factor for refraction

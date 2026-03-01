@@ -25,7 +25,7 @@ ThreadPool::~ThreadPool() {
 void ThreadPool::enqueue(Task task) {
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
-        if (!is_running_.load()) {
+        if (!is_running_.load() || should_stop_.load()) {
             return;
         }
         task_queue_.push(std::move(task));
@@ -39,6 +39,7 @@ void ThreadPool::shutdown() {
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
         should_stop_.store(true);
+        is_running_.store(false);
     }
     queue_cv_.notify_all();
 
@@ -47,8 +48,6 @@ void ThreadPool::shutdown() {
             worker.join();
         }
     }
-
-    is_running_.store(false);
 }
 
 void ThreadPool::worker_loop() {

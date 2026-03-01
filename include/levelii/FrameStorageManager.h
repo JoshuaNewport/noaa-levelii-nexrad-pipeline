@@ -195,6 +195,11 @@ private:
     std::string base_path_;
     mutable std::shared_mutex index_mutex_;
     mutable std::unordered_map<std::string, json> index_cache_;
+
+    // Incremental statistics tracking
+    mutable std::mutex stats_mutex_;
+    std::atomic<size_t> total_disk_usage_{0};
+    std::atomic<int> total_frame_count_{0};
     
     // Async storage
     std::queue<AsyncWriteTask> write_queue_;
