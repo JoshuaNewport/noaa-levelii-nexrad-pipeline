@@ -23,6 +23,7 @@ It currently supports both:
 - **3D volumetric outputs**,
 using bitmasked quantization for compact and efficient data representation.
 
+![Pipeline Diagram](./docs/images/pipeline_diagram.png)
 ### Features
 - High-efficiency S3-based discovery of new radar frames.
 - High-throughput multi-threaded processing with pre-allocated buffer pools.
