@@ -154,6 +154,9 @@ int main(int argc, char* argv[]) {
         fetcher_config.products = {
             "reflectivity",
             "velocity",
+            "spectrum_width",
+            "differential_reflectivity",
+            "differential_phase",
             "correlation_coefficient"
         };
         fetcher_config.scan_interval_seconds = 30;

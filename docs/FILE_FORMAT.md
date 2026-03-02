@@ -21,7 +21,7 @@ The metadata block contains essential information about the radar frame or sweep
 
 **Key Map:**
 - `s`: Station ID (e.g., "KTLX")
-- `p`: Product type (e.g., "reflectivity", "velocity")
+- `p`: Product type (e.g., "reflectivity", "velocity", "spectrum_width", "differential_reflectivity", "differential_phase", "correlation_coefficient")
 - `t`: Timestamp (format: `YYYYMMDD_HHMMSS`)
 - `e`: Elevation angle (tilt) in degrees.
 - `f`: Format type (`"b"` for bitmask).
@@ -31,6 +31,9 @@ The metadata block contains essential information about the radar frame or sweep
 - `fg`: First gate distance (meters).
 - `v`: Total number of valid (non-zero) data points.
 - `tilts`: (Optional) Array of tilt angles if the file contains a full volume.
+- `dualpol`: (Optional) Object containing dual-polarimetric metadata:
+    - `sys_diff_refl`: System Differential Reflectivity (dB).
+    - `sys_diff_phase`: System Differential Phase (deg).
 
 ### 2. Bitmask
 
@@ -47,8 +50,12 @@ Only the data points marked as `1` in the bitmask are stored in this array.
 - **Data type**: `uint8` (0-255).
 - **De-quantization**:
   The raw value is mapped to a physical value based on the product type:
-  - **Reflectivity**: `min = -32.0, max = 95.0`
+  - **Reflectivity**: `min = -32.0, max = 94.5`
   - **Velocity**: `min = -100.0, max = 100.0`
+  - **Spectrum Width**: `min = 0.0, max = 64.0`
+  - **Differential Reflectivity**: `min = -8.0, max = 8.0`
+  - **Differential Phase**: `min = 0.0, max = 360.0`
+  - **Correlation Coefficient**: `min = 0.0, max = 1.1`
   - **Dequantized Value**: `min + (uint8_val / 255.0) * (max - min)`
 
 ## Accessing Data

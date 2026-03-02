@@ -11,6 +11,11 @@ target_include_directories(test_multi_product PRIVATE ${CMAKE_CURRENT_SOURCE_DIR
 target_link_libraries(test_multi_product PRIVATE levelii_RadarParser)
 add_test(NAME unit_multi_product COMMAND test_multi_product ${CMAKE_CURRENT_SOURCE_DIR}/../test_files/KTLX20260209_162244_V06)
 
+add_executable(test_all_moments unit/test_all_moments.cpp)
+target_include_directories(test_all_moments PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+target_link_libraries(test_all_moments PRIVATE levelii_RadarParser)
+add_test(NAME unit_all_moments COMMAND test_all_moments ${CMAKE_CURRENT_SOURCE_DIR}/../test_files/KABR20250621_041210_V06)
+
 add_executable(test_threadpool unit/test_threadpool.cpp)
 target_include_directories(test_threadpool PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 target_link_libraries(test_threadpool PRIVATE levelii_ThreadPool)

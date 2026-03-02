@@ -146,8 +146,7 @@ struct DataBlock_Moment {
     uint16_t gate_spacing;      // Gate Spacing (m) (Big Endian)
     uint16_t threshold;         // SNR Threshold (Big Endian)
     uint16_t control_flags;     // Control Flags (Big Endian)
-    uint8_t data_word_size;     // Data Word Size (8 or 16 bits) at offset 18
-    uint8_t spare;              // Spare byte at offset 19
+    uint16_t data_word_size;    // Data Word Size (8 or 16 bits) (Big Endian)
     float scale;                // Scale (Big Endian float) at offset 20
     float offset;               // Offset (Big Endian float) at offset 24
     // Followed by raw data (uint8_t or uint16_t based on data_word_size)

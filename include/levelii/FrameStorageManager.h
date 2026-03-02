@@ -24,6 +24,7 @@
 #include <thread>
 #include <atomic>
 #include <condition_variable>
+#include "levelii/RadarFrame.h"
 
 using json = nlohmann::json;
 namespace fs = std::filesystem;
@@ -46,6 +47,7 @@ struct AsyncWriteTask {
     uint16_t num_gates;
     float gate_spacing;
     float first_gate;
+    RadarFrame::DualPolMetadata dualpol_meta;
 };
 
 /**
@@ -104,7 +106,8 @@ public:
         float gate_spacing,
         float first_gate,
         const std::vector<uint8_t>& bitmask,
-        const std::vector<uint8_t>& values
+        const std::vector<uint8_t>& values,
+        const RadarFrame::DualPolMetadata& dualpol_meta = {}
     );
     
     /**
@@ -120,6 +123,7 @@ public:
      * @param first_gate Distance to first gate in meters.
      * @param bitmask Packed bitmask of valid data points.
      * @param values Vector of quantized data values.
+     * @param dualpol_meta Dual-polarimetric metadata.
      * @return true if saved successfully.
      */
     bool save_volumetric_bitmask(
@@ -132,7 +136,8 @@ public:
         float gate_spacing,
         float first_gate,
         const std::vector<uint8_t>& bitmask,
-        const std::vector<uint8_t>& values
+        const std::vector<uint8_t>& values,
+        const RadarFrame::DualPolMetadata& dualpol_meta = {}
     );
 
     /**

@@ -545,7 +545,7 @@ void BackgroundFrameFetcher::process_discovery_batch(const DiscoveryBatch& batch
                             }
                         }
 
-                        if (storage_->save_frame_bitmask(item.station, product, item.timestamp, tilt, num_rays, vol_num_gates, frame->gate_spacing_meters, frame->first_gate_meters, bitmask_2d, values_2d)) {
+                        if (storage_->save_frame_bitmask(item.station, product, item.timestamp, tilt, num_rays, vol_num_gates, frame->gate_spacing_meters, frame->first_gate_meters, bitmask_2d, values_2d, frame->dualpol_meta)) {
                             frames_fetched_.fetch_add(1);
                             {
                                 std::lock_guard<std::mutex> lock(stats_mutex_);
@@ -573,7 +573,7 @@ void BackgroundFrameFetcher::process_discovery_batch(const DiscoveryBatch& batch
                         }
 
                         if (!vol_values.empty()) {
-                            storage_->save_volumetric_bitmask(item.station, product, item.timestamp, sorted_tilts, vol_num_rays, vol_num_gates, frame->gate_spacing_meters, frame->first_gate_meters, vol_bitmask, vol_values);
+                            storage_->save_volumetric_bitmask(item.station, product, item.timestamp, sorted_tilts, vol_num_rays, vol_num_gates, frame->gate_spacing_meters, frame->first_gate_meters, vol_bitmask, vol_values, frame->dualpol_meta);
                         }
                     }
                 } catch (const std::exception& e) {

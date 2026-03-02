@@ -109,13 +109,13 @@ void FrameStorageManager::process_write_task(const AsyncWriteTask& task) {
             case AsyncWriteTask::BITMASK:
                 save_frame_bitmask(task.station, task.product, task.timestamp, task.tilt,
                                   task.num_rays, task.num_gates, task.gate_spacing, task.first_gate,
-                                  task.bitmask, task.values);
+                                  task.bitmask, task.values, task.dualpol_meta);
                 break;
             case AsyncWriteTask::VOLUMETRIC_BITMASK:
                 save_volumetric_bitmask(task.station, task.product, task.timestamp,
                                        task.tilts, task.num_rays, task.num_gates,
                                        task.gate_spacing, task.first_gate,
-                                       task.bitmask, task.values);
+                                       task.bitmask, task.values, task.dualpol_meta);
                 break;
         }
     } catch (const std::exception& e) {
@@ -153,7 +153,7 @@ std::string FrameStorageManager::get_index_path(const std::string& station, cons
     return oss.str();
 }
 
-bool FrameStorageManager::save_frame_bitmask(const std::string& station, const std::string& product, const std::string& timestamp, float tilt, uint16_t num_rays, uint16_t num_gates, float gate_spacing, float first_gate, const std::vector<uint8_t>& bitmask, const std::vector<uint8_t>& values) {
+bool FrameStorageManager::save_frame_bitmask(const std::string& station, const std::string& product, const std::string& timestamp, float tilt, uint16_t num_rays, uint16_t num_gates, float gate_spacing, float first_gate, const std::vector<uint8_t>& bitmask, const std::vector<uint8_t>& values, const RadarFrame::DualPolMetadata& dualpol_meta) {
     std::string dir = base_path_ + "/" + station + "/" + timestamp + "/" + product;
     if (!ensure_directory_exists(dir)) return false;
     
@@ -162,6 +162,13 @@ bool FrameStorageManager::save_frame_bitmask(const std::string& station, const s
         {"f", "b"}, {"r", num_rays}, {"g", num_gates}, {"gs", gate_spacing},
         {"fg", first_gate}, {"v", values.size()}
     };
+
+    if (dualpol_meta.sys_diff_refl != 0.0f || dualpol_meta.sys_diff_phase != 0.0f) {
+        metadata["dualpol"] = {
+            {"sys_diff_refl", dualpol_meta.sys_diff_refl},
+            {"sys_diff_phase", dualpol_meta.sys_diff_phase}
+        };
+    }
     
     std::string metadata_str = metadata.dump();
     uint32_t metadata_size = metadata_str.size();
@@ -272,7 +279,7 @@ bool FrameStorageManager::load_volumetric_bitmask(const std::string& station, co
     return true;
 }
 
-bool FrameStorageManager::save_volumetric_bitmask(const std::string& station, const std::string& product, const std::string& timestamp, const std::vector<float>& tilts, uint16_t num_rays, uint16_t num_gates, float gate_spacing, float first_gate, const std::vector<uint8_t>& bitmask, const std::vector<uint8_t>& values) {
+bool FrameStorageManager::save_volumetric_bitmask(const std::string& station, const std::string& product, const std::string& timestamp, const std::vector<float>& tilts, uint16_t num_rays, uint16_t num_gates, float gate_spacing, float first_gate, const std::vector<uint8_t>& bitmask, const std::vector<uint8_t>& values, const RadarFrame::DualPolMetadata& dualpol_meta) {
     std::string dir = base_path_ + "/" + station + "/" + timestamp + "/" + product;
     if (!ensure_directory_exists(dir)) return false;
     
@@ -281,6 +288,13 @@ bool FrameStorageManager::save_volumetric_bitmask(const std::string& station, co
         {"f", "b"}, {"tilts", tilts}, {"r", num_rays}, {"g", num_gates},
         {"gs", gate_spacing}, {"fg", first_gate}, {"v", values.size()}
     };
+
+    if (dualpol_meta.sys_diff_refl != 0.0f || dualpol_meta.sys_diff_phase != 0.0f) {
+        metadata["dualpol"] = {
+            {"sys_diff_refl", dualpol_meta.sys_diff_refl},
+            {"sys_diff_phase", dualpol_meta.sys_diff_phase}
+        };
+    }
     
     std::string metadata_str = metadata.dump();
     uint32_t metadata_size = metadata_str.size();

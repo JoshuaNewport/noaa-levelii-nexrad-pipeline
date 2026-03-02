@@ -360,8 +360,15 @@ public:
                         if (strncmp(block_hdr->name, "VOL", 3) == 0) {
                             auto vol_opt = nexrad::safe_read_struct<nexrad::DataBlock_Volume>(payload_ptr, payload_size, b_off, "DBV");
                             if (vol_opt) {
-                                uint16_t vcp = read_be<uint16_t>(reinterpret_cast<const uint8_t*>(&(*vol_opt)->vcp_number));
-                                for (auto& pair : frames) pair.second->vcp_number = vcp;
+                                const nexrad::DataBlock_Volume* vol = *vol_opt;
+                                uint16_t vcp = read_be<uint16_t>(reinterpret_cast<const uint8_t*>(&vol->vcp_number));
+                                float sys_dr = nexrad::read_be_float(reinterpret_cast<const uint8_t*>(&vol->sys_diff_refl));
+                                float sys_dp = nexrad::read_be_float(reinterpret_cast<const uint8_t*>(&vol->sys_diff_phase));
+                                for (auto& pair : frames) {
+                                    pair.second->vcp_number = vcp;
+                                    pair.second->dualpol_meta.sys_diff_refl = sys_dr;
+                                    pair.second->dualpol_meta.sys_diff_phase = sys_dp;
+                                }
                             }
                         } else if (strncmp(block_hdr->name, "RAD", 3) == 0) {
                             auto rad_opt = nexrad::safe_read_struct<nexrad::DataBlock_Radial>(payload_ptr, payload_size, b_off, "DBR");
@@ -385,7 +392,8 @@ public:
                             float gs = static_cast<float>(read_be<uint16_t>(reinterpret_cast<const uint8_t*>(&moment->gate_spacing)));
                             float sc = read_be_float(reinterpret_cast<const uint8_t*>(&moment->scale));
                             float ov = read_be_float(reinterpret_cast<const uint8_t*>(&moment->offset));
-                            uint8_t ws = moment->data_word_size == 0 ? 8 : moment->data_word_size;
+                            uint16_t ws = read_be<uint16_t>(reinterpret_cast<const uint8_t*>(&moment->data_word_size));
+                            if (ws == 0) ws = 8;
                             if (ng == 0 || ng > 8000 || gs == 0 || (ws != 8 && ws != 16)) continue;
                             
                             size_t dsize = static_cast<size_t>(ng) * (ws / 8);

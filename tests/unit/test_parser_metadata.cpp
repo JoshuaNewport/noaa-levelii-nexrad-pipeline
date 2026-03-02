@@ -55,6 +55,8 @@ int main(int argc, char** argv) {
     std::cout << "Number of rays: " << frame->nrays << std::endl;
     std::cout << "Gate spacing: " << frame->gate_spacing_meters << " m" << std::endl;
     std::cout << "First gate: " << frame->first_gate_meters << " m" << std::endl;
+    std::cout << "Sys Diff Refl: " << frame->dualpol_meta.sys_diff_refl << " dB" << std::endl;
+    std::cout << "Sys Diff Phase: " << frame->dualpol_meta.sys_diff_phase << " deg" << std::endl;
 
     std::cout << "\n--- Tilts Found (from available_tilts) ---" << std::endl;
     for (float tilt : frame->available_tilts) {

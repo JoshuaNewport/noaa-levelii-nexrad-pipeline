@@ -76,6 +76,8 @@ struct RadarFrame {
         float zdr_calibration_db = 0.0f;
         float phidp_offset_deg = 0.0f;
         float rho_threshold = 0.9f;
+        float sys_diff_refl = 0.0f;
+        float sys_diff_phase = 0.0f;
     } dualpol_meta;
     
     // Volumetric 3D data: [x, y, z, value] in earth coordinates (meters from radar origin)
