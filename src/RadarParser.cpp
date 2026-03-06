@@ -146,20 +146,6 @@ public:
             is_archive2 = true;
         }
 
-        if (is_archive2 && offset + (134 * 2432) <= parse_size) {
-            for (int i = 0; i < 134; ++i) {
-                size_t seg_offset = offset + (i * 2432);
-                const nexrad::MessageHeader* msg_header = 
-                    reinterpret_cast<const nexrad::MessageHeader*>(parse_data + seg_offset + 12);
-                if (msg_header->type == 0) continue;
-                const uint8_t* payload_start = parse_data + seg_offset + 12 + sizeof(nexrad::MessageHeader);
-                size_t payload_size = 2432 - 12 - sizeof(nexrad::MessageHeader);
-                nexrad::MessageSegmenter::SegmentedMessage complete_msg;
-                segmenter.add_segment(*msg_header, payload_start, payload_size, complete_msg);
-            }
-            offset += (134 * 2432);
-        }
-
         while (offset + sizeof(nexrad::MessageHeader) <= parse_size && message_count < 200000) {
             if (is_archive2) {
                 while (offset < parse_size && parse_data[offset] == 0) offset++;
@@ -287,9 +273,9 @@ public:
                             if (num_gates > 0 && payload_size >= static_cast<size_t>(46 + num_gates)) {
                                 const uint8_t* gate_data = payload_ptr + 46;
                                 if (frame.ngates == 0 && num_gates > 10) {
-                                    frame.ngates = num_gates;
-                                    frame.gate_spacing_meters = gate_size_m;
-                                    frame.range_spacing_meters = gate_size_m;
+                                    frame.ngates = (num_gates + DOWNSAMPLE_GATES - 1) / DOWNSAMPLE_GATES;
+                                    frame.gate_spacing_meters = gate_size_m * DOWNSAMPLE_GATES;
+                                    frame.range_spacing_meters = gate_size_m * DOWNSAMPLE_GATES;
                                     frame.first_gate_meters = first_gate_m;
                                 }
                                 for (uint16_t g = 0; g < num_gates; g += DOWNSAMPLE_GATES) {
@@ -364,10 +350,18 @@ public:
                                 uint16_t vcp = read_be<uint16_t>(reinterpret_cast<const uint8_t*>(&vol->vcp_number));
                                 float sys_dr = nexrad::read_be_float(reinterpret_cast<const uint8_t*>(&vol->sys_diff_refl));
                                 float sys_dp = nexrad::read_be_float(reinterpret_cast<const uint8_t*>(&vol->sys_diff_phase));
+                                float lat = read_be_float(reinterpret_cast<const uint8_t*>(&vol->lat));
+                                float lon = read_be_float(reinterpret_cast<const uint8_t*>(&vol->lon));
+                                int16_t site_h = read_be<int16_t>(reinterpret_cast<const uint8_t*>(&vol->site_height));
+                                uint16_t feed_h = read_be<uint16_t>(reinterpret_cast<const uint8_t*>(&vol->feedhorn_height));
+                                
                                 for (auto& pair : frames) {
                                     pair.second->vcp_number = vcp;
                                     pair.second->dualpol_meta.sys_diff_refl = sys_dr;
                                     pair.second->dualpol_meta.sys_diff_phase = sys_dp;
+                                    pair.second->radar_lat = static_cast<double>(lat);
+                                    pair.second->radar_lon = static_cast<double>(lon);
+                                    pair.second->radar_height_asl_meters = static_cast<float>(site_h) + static_cast<float>(feed_h);
                                 }
                             }
                         } else if (strncmp(block_hdr->name, "RAD", 3) == 0) {
@@ -412,7 +406,12 @@ public:
                                 
                                 if (!is_target) continue;
                                 auto& f = *pair.second;
-                                if (f.ngates == 0 && ng > 10) { f.ngates = ng; f.gate_spacing_meters = gs; f.range_spacing_meters = gs; f.first_gate_meters = fg; }
+                                if (f.ngates == 0 && ng > 10) { 
+                                    f.ngates = (ng + DOWNSAMPLE_GATES - 1) / DOWNSAMPLE_GATES; 
+                                    f.gate_spacing_meters = gs * DOWNSAMPLE_GATES; 
+                                    f.range_spacing_meters = gs * DOWNSAMPLE_GATES; 
+                                    f.first_gate_meters = fg; 
+                                }
                                 
                                 for (uint16_t g = 0; g < ng; g += DOWNSAMPLE_GATES) {
                                     uint16_t raw = (ws == 16) ? read_be<uint16_t>(gdata + g * 2) : gdata[g];
@@ -464,8 +463,9 @@ std::unique_ptr<RadarFrame> parse_nexrad_level2(
     const std::string& product_type)
 {
     auto results = NEXRADParser::parse(data, station, timestamp, {product_type});
-    if (results.count(product_type)) {
-        return std::move(results[product_type]);
+    auto it = results.find(product_type);
+    if (it != results.end()) {
+        return std::move(it->second);
     }
     return nullptr;
 }

@@ -19,56 +19,62 @@ void VolumetricGenerator::generate_volumetric_3d(RadarFrame& frame) {
     }
     frame.volumetric_3d.reserve(total_potential_bins * 4);
     
-    const float RE = 6371000.0f;  // Earth radius in meters
-    const float IR = 4.0f / 3.0f; // 4/3 earth radius factor for refraction
-    const float R_PRIME = RE * IR;
-    const float radar_height_asl = frame.radar_height_asl_meters;
-    const float base = R_PRIME + radar_height_asl;
-    const float base_sq = base * base;
+    const double RE = 6371000.0;  // Earth radius in meters
+    const double IR = 4.0 / 3.0; // 4/3 earth radius factor for refraction
+    const double R_PRIME = RE * IR;
+    const double radar_height_asl = static_cast<double>(frame.radar_height_asl_meters);
+    const double base = R_PRIME + radar_height_asl;
+    const double base_sq = base * base;
     
     for (const auto& sweep : frame.sweeps) {
-        float elevation_rad = sweep.elevation_deg * static_cast<float>(M_PI) / 180.0f;
-        float cos_elev = std::cos(elevation_rad);
-        float sin_elev = std::sin(elevation_rad);
-        float two_base_sin_elev = 2.0f * base * sin_elev;
+        double elevation_rad = static_cast<double>(sweep.elevation_deg) * M_PI / 180.0;
+        double cos_elev = std::cos(elevation_rad);
+        double sin_elev = std::sin(elevation_rad);
         
         const auto& bins = sweep.bins;
-        float last_azimuth = -999.0f;
-        float sin_azimuth = 0.0f;
-        float cos_azimuth = 0.0f;
+        double last_azimuth = -999.0;
+        double sin_azimuth = 0.0;
+        double cos_azimuth = 0.0;
 
         for (size_t i = 0; i + 2 < bins.size(); i += 3) {
-            float azimuth_deg = bins[i];
-            float range_meters = bins[i + 1];
-            float value = bins[i + 2];
+            double azimuth_deg = static_cast<double>(bins[i]);
+            double range_meters = static_cast<double>(bins[i + 1]);
+            double value = static_cast<double>(bins[i + 2]);
             
-            if (value <= -100.0f) continue; // Skip no-data/very low values
+            if (value <= -100.0) continue; // Skip no-data/very low values
             
             if (azimuth_deg != last_azimuth) {
-                float azimuth_rad = azimuth_deg * static_cast<float>(M_PI) / 180.0f;
+                double azimuth_rad = azimuth_deg * M_PI / 180.0;
                 sin_azimuth = std::sin(azimuth_rad);
                 cos_azimuth = std::cos(azimuth_rad);
                 last_azimuth = azimuth_deg;
             }
             
             // Standard 4/3 earth radius model for height above sea level
-            float height_asl = std::sqrt(range_meters * range_meters + base_sq + 
-                                        range_meters * two_base_sin_elev) - R_PRIME;
+            // h = sqrt(r^2 + (Re'+H0)^2 + 2*r*(Re'+H0)*sin(elev)) - Re'
+            double height_asl = std::sqrt(range_meters * range_meters + base_sq + 
+                                        2.0 * range_meters * base * sin_elev) - R_PRIME;
             
-            // Ground distance s along the curved earth
-            float arg = (range_meters * cos_elev) / (R_PRIME + height_asl);
-            if (arg < -1.0f) arg = -1.0f;
-            if (arg > 1.0f) arg = 1.0f;
-            float s = R_PRIME * std::asin(arg);
+            // Ground distance s along the curved earth (arc length)
+            // Using atan2 for better precision and stability than asin
+            // theta = atan2(r * cos(elev), Re' + H0 + r * sin(elev))
+            double theta = std::atan2(range_meters * cos_elev, base + range_meters * sin_elev);
+            double s = R_PRIME * theta;
             
-            float x = s * sin_azimuth;
-            float y = s * cos_azimuth;
-            float z = height_asl - radar_height_asl; // Height relative to radar
+            // Arc-length projection for horizontal coordinates
+            float x = static_cast<float>(s * sin_azimuth);
+            float y = static_cast<float>(s * cos_azimuth);
+            
+            // Height relative to the radar's origin plane (tangent plane)
+            // z = (Re' + h) * cos(theta) - (Re' + H0)
+            // This simplifies to z = r * sin(elev) but we keep the form for clarity
+            double z_relative = (R_PRIME + height_asl) * std::cos(theta) - base;
+            float z = static_cast<float>(z_relative);
             
             frame.volumetric_3d.push_back(x);
             frame.volumetric_3d.push_back(y);
             frame.volumetric_3d.push_back(z);
-            frame.volumetric_3d.push_back(value);
+            frame.volumetric_3d.push_back(static_cast<float>(value));
         }
     }
     

@@ -18,21 +18,21 @@ constexpr bool VERBOSE_LOGGING = false;
 // ============================================================================
 // Decompress bzip2 data (ULTRA-OPTIMIZED - TARGET: <100ms)
 // ============================================================================
-bool decompress_bz2(const std::vector<uint8_t>& compressed, 
-                    std::vector<uint8_t>& decompressed) {
-    if (compressed.empty()) return false;
+bool decompress_bz2_raw(const uint8_t* data, size_t size, 
+                        std::vector<uint8_t>& decompressed) {
+    if (size == 0) return false;
     
     // OPTIMIZATION 1: Better initial size estimate for NEXRAD data
     // Typical NEXRAD bz2 compression ratio is ~10-12x
     // Pre-allocate 12x to minimize reallocations
-    decompressed.resize(compressed.size() * 12);
+    decompressed.resize(size * 12);
     
     bz_stream stream;
     stream.bzalloc = nullptr;
     stream.bzfree = nullptr;
     stream.opaque = nullptr;
-    stream.avail_in = compressed.size();
-    stream.next_in = const_cast<char*>(reinterpret_cast<const char*>(compressed.data()));
+    stream.avail_in = size;
+    stream.next_in = const_cast<char*>(reinterpret_cast<const char*>(data));
     stream.avail_out = decompressed.size();
     stream.next_out = reinterpret_cast<char*>(decompressed.data());
     
@@ -64,6 +64,11 @@ bool decompress_bz2(const std::vector<uint8_t>& compressed,
             stream.next_out = reinterpret_cast<char*>(decompressed.data() + old_size);
         }
     }
+}
+
+bool decompress_bz2(const std::vector<uint8_t>& compressed, 
+                    std::vector<uint8_t>& decompressed) {
+    return decompress_bz2_raw(compressed.data(), compressed.size(), decompressed);
 }
 
 // ============================================================================
@@ -188,7 +193,16 @@ bool auto_decompress(const std::vector<uint8_t>& data,
     if (data.size() >= VOLUME_HEADER_SIZE + CONTROL_WORD_SIZE) {
         // LDM format typically has AR2V magic or specific headers
         if (!decompress_ldm(data, decompressed)) {
-            // Try treating as raw bzip2 even if not starting with BZ
+            // FALLBACK: If LDM decompressor fails, it might be a single bzip2 stream 
+            // following the VolumeHeader. Skip the VolumeHeader and try raw bzip2.
+            if (data.size() > VOLUME_HEADER_SIZE + 2 && 
+                data[VOLUME_HEADER_SIZE] == 'B' && data[VOLUME_HEADER_SIZE+1] == 'Z') {
+                return decompress_bz2_raw(data.data() + VOLUME_HEADER_SIZE, 
+                                          data.size() - VOLUME_HEADER_SIZE, 
+                                          decompressed);
+            }
+            
+            // Try treating as raw bzip2 even if not starting with BZ or after VolumeHeader
             return decompress_bz2(data, decompressed);
         }
         return true;

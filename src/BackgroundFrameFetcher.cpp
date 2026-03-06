@@ -80,6 +80,9 @@ std::vector<uint8_t>* BufferPool::acquire() {
 
 void BufferPool::release(std::vector<uint8_t>* buffer) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (buffer) {
+        buffer->clear();
+    }
     available_.push(buffer);
     cv_.notify_one();
 }

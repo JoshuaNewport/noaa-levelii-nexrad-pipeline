@@ -32,7 +32,7 @@ public:
 
     void shutdown();
 
-    bool is_running() const { return is_running_.load(); }
+    bool is_running() const { return !stop_.load(); }
 
     size_t worker_count() const { return workers_.size(); }
     size_t active_threads() const { return active_threads_.load(); }
@@ -46,8 +46,7 @@ private:
     std::queue<Task> task_queue_;
     mutable std::mutex queue_mutex_;
     std::condition_variable queue_cv_;
-    std::atomic<bool> is_running_{false};
-    std::atomic<bool> should_stop_{false};
+    std::atomic<bool> stop_{false};
     std::atomic<size_t> active_threads_{0};
 
     void worker_loop();

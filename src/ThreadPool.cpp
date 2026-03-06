@@ -10,8 +10,7 @@ ThreadPool::ThreadPool(size_t worker_count) {
         worker_count = std::max(1U, std::thread::hardware_concurrency() / 2);
     }
 
-    is_running_.store(true);
-    should_stop_.store(false);
+    stop_.store(false);
 
     for (size_t i = 0; i < worker_count; ++i) {
         workers_.emplace_back([this]() { this->worker_loop(); });
@@ -25,7 +24,7 @@ ThreadPool::~ThreadPool() {
 void ThreadPool::enqueue(Task task) {
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
-        if (!is_running_.load() || should_stop_.load()) {
+        if (stop_.load()) {
             return;
         }
         task_queue_.push(std::move(task));
@@ -34,12 +33,11 @@ void ThreadPool::enqueue(Task task) {
 }
 
 void ThreadPool::shutdown() {
-    if (!is_running_.load()) return;
+    if (stop_.load()) return;
 
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
-        should_stop_.store(true);
-        is_running_.store(false);
+        stop_.store(true);
     }
     queue_cv_.notify_all();
 
@@ -56,10 +54,10 @@ void ThreadPool::worker_loop() {
         {
             std::unique_lock<std::mutex> lock(queue_mutex_);
             queue_cv_.wait(lock, [this]() {
-                return should_stop_.load() || !task_queue_.empty();
+                return stop_.load() || !task_queue_.empty();
             });
 
-            if (should_stop_.load() && task_queue_.empty()) {
+            if (stop_.load() && task_queue_.empty()) {
                 break;
             }
 

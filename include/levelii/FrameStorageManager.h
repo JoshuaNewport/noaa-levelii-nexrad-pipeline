@@ -29,6 +29,8 @@
 using json = nlohmann::json;
 namespace fs = std::filesystem;
 
+constexpr size_t MAX_INDEX_CACHE_SIZE = 64;
+
 struct AsyncWriteTask {
     enum Type {
         BITMASK,

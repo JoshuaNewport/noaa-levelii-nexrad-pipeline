@@ -358,7 +358,13 @@ void FrameStorageManager::update_index(const std::string& station, const std::st
             file.close();
         }
         
-        index_cache_[station + "/" + product] = index;
+        std::string key = station + "/" + product;
+        index_cache_[key] = index;
+        
+        if (index_cache_.size() > MAX_INDEX_CACHE_SIZE) {
+            auto oldest_it = index_cache_.begin();
+            index_cache_.erase(oldest_it);
+        }
     } catch (...) {}
 }
 
