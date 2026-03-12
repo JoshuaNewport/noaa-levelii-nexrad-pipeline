@@ -39,7 +39,7 @@ The `nexrad_pipeline` provides a RESTful Admin API when started with the `--http
     "last_fetch_timestamp": 1708892143000,
     "success_rate": 98.4,
     "uptime_seconds": 3600,
-    "version": "1.0.0",
+    "version": "1.1.0",
     "thread_pool": {
         "active_threads": 2,
         "pending_tasks": 0,
@@ -76,7 +76,7 @@ The `nexrad_pipeline` provides a RESTful Admin API when started with the `--http
 
 #### `GET /api/status`
 - **Description**: Get current service operational status.
-- **Response**: `{"fetcher_running": true, "status": "operational", "version": "1.0.0", "timestamp": 1708892143}`
+- **Response**: `{"fetcher_running": true, "status": "operational", "version": "1.1.0", "timestamp": 1708892143}`
 
 ---
 
