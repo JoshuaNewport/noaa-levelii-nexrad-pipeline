@@ -87,7 +87,7 @@ public:
      */
     size_t total_buffers() const { return buffers_.size(); }
     size_t available_buffers() const {
-        std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(mutex_));
+        std::lock_guard<std::mutex> lock(mutex_);
         return available_.size();
     }
     size_t buffer_size() const { return buffer_size_; }
@@ -96,7 +96,7 @@ private:
     size_t buffer_size_;
     std::vector<std::unique_ptr<std::vector<uint8_t>>> buffers_;
     std::queue<std::vector<uint8_t>*> available_;
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     std::condition_variable cv_;
     bool stop_{false};
 };
@@ -231,7 +231,7 @@ private:
     // Discovery queue
     std::thread discovery_loop_thread_;
     std::queue<DiscoveryBatch> discovery_queue_;
-    std::mutex discovery_mutex_;
+    mutable std::mutex discovery_mutex_;
     std::condition_variable discovery_cv_;
     std::condition_variable discovery_full_cv_;
 
