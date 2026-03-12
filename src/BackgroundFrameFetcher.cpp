@@ -90,9 +90,11 @@ void BufferPool::release(std::vector<uint8_t>* buffer) {
         } else {
             buffer->clear();
         }
+        if (!stop_) {
+            available_.push(buffer);
+            cv_.notify_one();
+        }
     }
-    available_.push(buffer);
-    cv_.notify_one();
 }
 
 void BufferPool::shutdown() {
@@ -163,9 +165,9 @@ void BackgroundFrameFetcher::stop() {
 
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
-        disc_pool = discovery_thread_pool_;
-        fetch_pool = fetch_thread_pool_;
-        buf_pool = buffer_pool_;
+        disc_pool = std::move(discovery_thread_pool_);
+        fetch_pool = std::move(fetch_thread_pool_);
+        buf_pool = std::move(buffer_pool_);
     }
 
     if (disc_pool) disc_pool->shutdown();
@@ -247,8 +249,6 @@ void BackgroundFrameFetcher::reinitialize_pools() {
         } catch (...) {}
     }
 
-    // Ensure buffer pool is large enough for the number of threads to avoid deadlocks
-    // Each fetcher thread can hold up to 4 buffers at once during peak processing
     int required_buffers = fetch_threads * 4;
     int actual_buffer_pool_size = std::max(buffer_pool_size, required_buffers);
 
@@ -267,9 +267,9 @@ void BackgroundFrameFetcher::reinitialize_pools() {
     
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
-        old_fetch_pool = fetch_thread_pool_;
-        old_disc_pool = discovery_thread_pool_;
-        old_buffer_pool = buffer_pool_;
+        old_fetch_pool = std::move(fetch_thread_pool_);
+        old_disc_pool = std::move(discovery_thread_pool_);
+        old_buffer_pool = std::move(buffer_pool_);
         
         fetch_thread_pool_ = new_fetch_pool;
         discovery_thread_pool_ = new_disc_pool;

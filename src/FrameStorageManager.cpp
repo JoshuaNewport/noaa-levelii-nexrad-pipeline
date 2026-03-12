@@ -45,8 +45,8 @@ FrameStorageManager::FrameStorageManager(const std::string& base_path)
     total_disk_usage_.store(usage);
     total_frame_count_.store(count);
     
-    async_storage_running_.store(true);
     async_storage_stop_.store(false);
+    async_storage_running_.store(true);
     storage_thread_ = std::thread([this]() { this->async_storage_loop(); });
 }
 
@@ -74,6 +74,9 @@ void FrameStorageManager::shutdown_async_storage() {
     {
         std::lock_guard<std::mutex> lock(write_queue_mutex_);
         async_storage_stop_.store(true);
+        while (!write_queue_.empty()) {
+            write_queue_.pop();
+        }
     }
     write_queue_cv_.notify_all();
     write_queue_full_cv_.notify_all();

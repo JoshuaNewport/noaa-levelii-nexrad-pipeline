@@ -68,7 +68,7 @@ For higher throughput, lower latency, and handling more stations concurrently:
 ### Documentation
 - [Building the Project](./docs/BUILD.md)
 - [Running the Service](./docs/RUNNING.md)
-- [Admin API Guide](./docs/HTTP.md)
+- [Admin API Guide](./docs/HTML.md)
 - [Output Format & Processing](./docs/FILE_FORMAT.md)
 
 ### Contributing

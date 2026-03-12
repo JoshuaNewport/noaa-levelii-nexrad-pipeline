@@ -110,16 +110,11 @@ public:
         : pool_(std::move(pool)), buffer_(pool_ ? pool_->acquire() : nullptr) {}
     
     ~ScopedBuffer() {
-        if (pool_ && buffer_) {
-            pool_->release(buffer_);
-        }
+        release_buffer();
     }
     
     void reset() {
-        if (pool_ && buffer_) {
-            pool_->release(buffer_);
-            buffer_ = nullptr;
-        }
+        release_buffer();
     }
     
     // Non-copyable
@@ -134,7 +129,7 @@ public:
     
     ScopedBuffer& operator=(ScopedBuffer&& other) noexcept {
         if (this != &other) {
-            if (pool_ && buffer_) pool_->release(buffer_);
+            release_buffer();
             pool_ = std::move(other.pool_);
             buffer_ = other.buffer_;
             other.buffer_ = nullptr;
@@ -152,6 +147,13 @@ public:
 private:
     std::shared_ptr<BufferPool> pool_;
     std::vector<uint8_t>* buffer_;
+    
+    void release_buffer() {
+        if (pool_ && buffer_) {
+            pool_->release(buffer_);
+            buffer_ = nullptr;
+        }
+    }
 };
 
 struct FrameFetcherConfig {
