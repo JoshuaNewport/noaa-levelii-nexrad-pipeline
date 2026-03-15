@@ -38,13 +38,45 @@ The `nexrad_pipeline` provides a RESTful Admin API when started with the `--http
     "frames_fetched": 123,
     "last_fetch_timestamp": 1708892143000,
     "success_rate": 98.4,
-    "uptime_seconds": 3600
+    "uptime_seconds": 3600,
+    "version": "1.1.0",
+    "thread_pool": {
+        "active_threads": 2,
+        "pending_tasks": 0,
+        "worker_count": 4
+    },
+    "discovery_pool": {
+        "active_threads": 1,
+        "pending_tasks": 0,
+        "worker_count": 2
+    },
+    "buffer_pool": {
+        "available_buffers": 8,
+        "buffer_size": 67108864,
+        "total_buffers": 10
+    },
+    "active_discovery_scans": {
+        "count": 1,
+        "stations": ["KTLX"]
+    },
+    "storage_pending_tasks": 0,
+    "index_cache_size": 12,
+    "total_stations_tracked": 150,
+    "station_stats": {
+        "KTLX": {
+            "frames_fetched": 10,
+            "frames_failed": 0,
+            "last_fetch_timestamp": 1708892143,
+            "last_frame_timestamp": "20240225_120000",
+            "last_scan_timestamp": 1708892100
+        }
+    }
 }
 ```
 
 #### `GET /api/status`
 - **Description**: Get current service operational status.
-- **Response**: `{"fetcher_running": true, "status": "operational", "timestamp": 1708892143}`
+- **Response**: `{"fetcher_running": true, "status": "operational", "version": "1.1.0", "timestamp": 1708892143}`
 
 ---
 
@@ -67,6 +99,7 @@ The `nexrad_pipeline` provides a RESTful Admin API when started with the `--http
 
 #### `POST /api/config`
 - **Description**: Update system configuration at runtime. Triggers pool re-initialization.
+- **Note**: Re-initialization is thread-safe and won't interrupt ongoing fetches. Old buffer pools are shut down properly to ensure no tasks are stuck.
 - **Body**: Any subset of the configuration keys.
 - **Example Body**: `{"fetcher_thread_pool_size": 8, "buffer_pool_size": 20}`
 - **Response**: `{"success": true, "config": { ... updated config ... }}`

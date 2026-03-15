@@ -22,6 +22,7 @@ public:
     bool is_initialized() const { return initialized_; }
 
     std::shared_ptr<Aws::S3::S3Client> get_s3_client() const {
+        std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(state_mutex_));
         return s3_client_;
     }
 

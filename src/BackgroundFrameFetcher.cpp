@@ -72,7 +72,8 @@ BufferPool::BufferPool(size_t num_buffers, size_t buffer_size) : buffer_size_(bu
 
 std::vector<uint8_t>* BufferPool::acquire() {
     std::unique_lock<std::mutex> lock(mutex_);
-    cv_.wait(lock, [this] { return !available_.empty(); });
+    cv_.wait(lock, [this] { return !available_.empty() || stop_; });
+    if (stop_ && available_.empty()) return nullptr;
     auto* buf = available_.front();
     available_.pop();
     return buf;
@@ -89,9 +90,19 @@ void BufferPool::release(std::vector<uint8_t>* buffer) {
         } else {
             buffer->clear();
         }
+        if (!stop_) {
+            available_.push(buffer);
+            cv_.notify_one();
+        }
     }
-    available_.push(buffer);
-    cv_.notify_one();
+}
+
+void BufferPool::shutdown() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stop_ = true;
+    }
+    cv_.notify_all();
 }
 
 // ============================================================================
@@ -148,8 +159,20 @@ void BackgroundFrameFetcher::stop() {
         cleanup_thread_.join();
     }
     
-    if (discovery_thread_pool_) discovery_thread_pool_->shutdown();
-    if (fetch_thread_pool_) fetch_thread_pool_->shutdown();
+    std::shared_ptr<ThreadPool> disc_pool;
+    std::shared_ptr<ThreadPool> fetch_pool;
+    std::shared_ptr<BufferPool> buf_pool;
+
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        disc_pool = std::move(discovery_thread_pool_);
+        fetch_pool = std::move(fetch_thread_pool_);
+        buf_pool = std::move(buffer_pool_);
+    }
+
+    if (disc_pool) disc_pool->shutdown();
+    if (fetch_pool) fetch_pool->shutdown();
+    if (buf_pool) buf_pool->shutdown();
 }
 
 void BackgroundFrameFetcher::add_monitored_station(const std::string& station) {
@@ -208,46 +231,58 @@ FrameFetcherConfig BackgroundFrameFetcher::get_config() const {
 }
 
 void BackgroundFrameFetcher::reinitialize_pools() {
+    int fetch_threads, disc_threads, buffer_pool_size, buffer_size, max_queue_size;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        fetch_threads = config_.fetcher_thread_pool_size;
+        disc_threads = config_.discovery_parallelism;
+        buffer_pool_size = config_.buffer_pool_size;
+        buffer_size = config_.buffer_size;
+        max_queue_size = config_.max_task_queue_size;
+    }
+
+    const char* disc_env = std::getenv("NEXRAD_DISCOVERY_THREADS");
+    if (disc_env) {
+        try {
+            disc_threads = std::stoi(disc_env);
+            this->log_info("Overriding discovery_parallelism with " + std::to_string(disc_threads) + " from NEXRAD_DISCOVERY_THREADS");
+        } catch (...) {}
+    }
+
+    int required_buffers = fetch_threads * 4;
+    int actual_buffer_pool_size = std::max(buffer_pool_size, required_buffers);
+
+    if (actual_buffer_pool_size > buffer_pool_size) {
+        this->log_info("Increasing buffer_pool_size from " + std::to_string(buffer_pool_size) + 
+                 " to " + std::to_string(actual_buffer_pool_size) + " to maintain adequate thread ratio");
+    }
+
+    auto new_fetch_pool = std::make_shared<ThreadPool>(fetch_threads, max_queue_size);
+    auto new_disc_pool = std::make_shared<ThreadPool>(disc_threads, max_queue_size);
+    auto new_buffer_pool = std::make_shared<BufferPool>(actual_buffer_pool_size, buffer_size);
+
     std::shared_ptr<ThreadPool> old_fetch_pool;
     std::shared_ptr<ThreadPool> old_disc_pool;
+    std::shared_ptr<BufferPool> old_buffer_pool;
     
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
-        old_fetch_pool = fetch_thread_pool_;
-        old_disc_pool = discovery_thread_pool_;
+        old_fetch_pool = std::move(fetch_thread_pool_);
+        old_disc_pool = std::move(discovery_thread_pool_);
+        old_buffer_pool = std::move(buffer_pool_);
         
-        fetch_thread_pool_ = std::make_shared<ThreadPool>(config_.fetcher_thread_pool_size, config_.max_task_queue_size);
+        fetch_thread_pool_ = new_fetch_pool;
+        discovery_thread_pool_ = new_disc_pool;
+        buffer_pool_ = new_buffer_pool;
         
-        int disc_threads = config_.discovery_parallelism;
-        const char* disc_env = std::getenv("NEXRAD_DISCOVERY_THREADS");
-        if (disc_env) {
-            try {
-                disc_threads = std::stoi(disc_env);
-                this->log_info("Overriding discovery_parallelism with " + std::to_string(disc_threads) + " from NEXRAD_DISCOVERY_THREADS");
-            } catch (...) {}
-        }
-        
-        discovery_thread_pool_ = std::make_shared<ThreadPool>(disc_threads, config_.max_task_queue_size);
-        
-        // Ensure buffer pool is large enough for the number of threads to avoid deadlocks
-        // Each fetcher thread can hold up to 3 buffers at once during peak processing
-        int required_buffers = config_.fetcher_thread_pool_size * 4;
-        int actual_buffer_pool_size = std::max(config_.buffer_pool_size, required_buffers);
-        
-        if (actual_buffer_pool_size > config_.buffer_pool_size) {
-            this->log_info("Increasing buffer_pool_size from " + std::to_string(config_.buffer_pool_size) + 
-                     " to " + std::to_string(actual_buffer_pool_size) + " to maintain adequate thread ratio");
-        }
-
-        buffer_pool_ = std::make_shared<BufferPool>(actual_buffer_pool_size, config_.buffer_size);
-        
-        this->log_info("Initialized pools: " + std::to_string(config_.fetcher_thread_pool_size) + 
+        this->log_info("Initialized pools: " + std::to_string(fetch_threads) + 
                  " fetch threads, " + std::to_string(disc_threads) + " discovery threads, " +
                  std::to_string(actual_buffer_pool_size) + " buffers");
     }
 
     if (old_fetch_pool) old_fetch_pool->shutdown();
     if (old_disc_pool) old_disc_pool->shutdown();
+    if (old_buffer_pool) old_buffer_pool->shutdown();
 }
 
 void BackgroundFrameFetcher::discovery_loop() {
@@ -307,7 +342,7 @@ void BackgroundFrameFetcher::discovery_loop() {
 
             if (disc_pool) {
                 for (const auto& station : stations) {
-                    if (should_stop_.load()) break;
+                    if (should_stop_.load() || !disc_pool->is_running()) break;
                     
                     // Only enqueue if not already scanning
                     {
@@ -418,8 +453,12 @@ void BackgroundFrameFetcher::process_discovery_batch(const DiscoveryBatch& batch
     auto s3_client = AWSInitializer::instance().get_s3_client();
     if (!s3_client || !buffer_pool) return;
 
+    auto is_stopped = [&]() {
+        return should_stop_.load() || (buffer_pool && buffer_pool->is_shutdown());
+    };
+
     for (const auto& item : batch.items) {
-        if (should_stop_.load()) break;
+        if (is_stopped()) break;
 
         GetObjectRequest get_req;
         get_req.WithBucket(item.bucket).WithKey(item.key);
@@ -445,13 +484,14 @@ void BackgroundFrameFetcher::process_discovery_batch(const DiscoveryBatch& batch
         raw_data->clear();
         
         char temp_buf[65536];
-        while (stream.read(temp_buf, sizeof(temp_buf))) {
+        while (stream.read(temp_buf, sizeof(temp_buf)) && !is_stopped()) {
             raw_data->insert(raw_data->end(), temp_buf, temp_buf + stream.gcount());
         }
-        if (stream.gcount() > 0) {
+        if (stream.gcount() > 0 && !is_stopped()) {
             raw_data->insert(raw_data->end(), temp_buf, temp_buf + stream.gcount());
         }
 
+        if (is_stopped()) break;
         if (raw_data->empty()) {
             continue;
         }
@@ -467,9 +507,10 @@ void BackgroundFrameFetcher::process_discovery_batch(const DiscoveryBatch& batch
         decompressed_data.reset();
 
         for (auto& pair : frames) {
+            if (is_stopped()) break;
             const std::string& product = pair.first;
             auto& frame = pair.second;
-            if (should_stop_.load()) break;
+            if (is_stopped()) break;
 
                 try {
                     if (!frame || frame->available_tilts.empty()) continue;
@@ -499,17 +540,20 @@ void BackgroundFrameFetcher::process_discovery_batch(const DiscoveryBatch& batch
                     auto params = get_quant_params(product);
 
                     for (size_t tilt_idx = 0; tilt_idx < sorted_tilts.size(); ++tilt_idx) {
+                        if (is_stopped()) break;
                         float tilt = sorted_tilts[tilt_idx];
-                        if (should_stop_.load()) break;
+                        if (is_stopped()) break;
 
                         // Check if this tilt has any sweeps before proceeding
                         bool has_sweeps = false;
                         for (const auto& sweep : frame->sweeps) {
+                            if (is_stopped()) break;
                             if (std::abs(sweep.elevation_deg - tilt) < 0.01f) {
                                 has_sweeps = true;
                                 break;
                             }
                         }
+                        if (is_stopped()) break;
                         if (!has_sweeps) continue;
 
                         uint16_t num_rays = 360;
@@ -528,8 +572,10 @@ void BackgroundFrameFetcher::process_discovery_batch(const DiscoveryBatch& batch
                         std::vector<uint8_t>& grid_2d = *grid_2d_buf;
                         
                         for (const auto& sweep : frame->sweeps) {
+                            if (is_stopped()) break;
                             if (std::abs(sweep.elevation_deg - tilt) < 0.01f) {
                                 for (size_t j = 0; j + 2 < sweep.bins.size(); j += 3) {
+                                    if (is_stopped()) break;
                                     float azimuth = sweep.bins[j];
                                     float range = sweep.bins[j+1];
                                     float value = sweep.bins[j+2];
@@ -564,6 +610,8 @@ void BackgroundFrameFetcher::process_discovery_batch(const DiscoveryBatch& batch
                             }
                         }
 
+                        if (is_stopped()) break;
+
                         ScopedBuffer bitmask_2d_buf(buffer_pool);
                         ScopedBuffer values_2d_buf(buffer_pool);
                         if (!bitmask_2d_buf.valid() || !values_2d_buf.valid()) continue;
@@ -581,6 +629,8 @@ void BackgroundFrameFetcher::process_discovery_batch(const DiscoveryBatch& batch
                             }
                         }
 
+                        if (is_stopped()) break;
+
                         if (storage_->save_frame_bitmask(item.station, product, item.timestamp, tilt, num_rays, vol_num_gates, frame->gate_spacing_meters, frame->first_gate_meters, bitmask_2d, values_2d, frame->dualpol_meta, false)) {
                             frames_fetched_.fetch_add(1);
                             {
@@ -592,6 +642,8 @@ void BackgroundFrameFetcher::process_discovery_batch(const DiscoveryBatch& batch
                         }
                     }
 
+                    if (is_stopped()) continue;
+
                     ScopedBuffer vol_bitmask_buf(buffer_pool);
                     ScopedBuffer vol_values_buf(buffer_pool);
                     if (vol_bitmask_buf.valid() && vol_values_buf.valid()) {
@@ -602,13 +654,14 @@ void BackgroundFrameFetcher::process_discovery_batch(const DiscoveryBatch& batch
                         std::vector<uint8_t>& vol_values = *vol_values_buf;
                         
                         for (size_t b = 0; b < vol_grid.size(); ++b) {
+                            if ((b & 0xFFFF) == 0 && is_stopped()) break;
                             if (vol_grid[b] > 0) {
                                 vol_bitmask[b / 8] |= (1 << (7 - (b % 8)));
                                 vol_values.push_back(vol_grid[b]);
                             }
                         }
 
-                        if (!vol_values.empty()) {
+                        if (!vol_values.empty() && !is_stopped()) {
                             storage_->save_volumetric_bitmask(item.station, product, item.timestamp, sorted_tilts, vol_num_rays, vol_num_gates, frame->gate_spacing_meters, frame->first_gate_meters, vol_bitmask, vol_values, frame->dualpol_meta, false);
                         }
                     }
@@ -797,19 +850,21 @@ void BackgroundFrameFetcher::fetch_frame_for_station(const std::string& station)
 }
 
 json BackgroundFrameFetcher::get_statistics() const {
-    json stats = {
-        {"is_running", is_running_.load()},
-        {"frames_fetched", frames_fetched_.load()},
-        {"frames_failed", frames_failed_.load()},
-        {"last_fetch_timestamp", last_fetch_timestamp_.load()},
-        {"monitored_stations", get_monitored_stations()},
-        {"max_frames_per_station", config_.max_frames_per_station},
-        {"catchup_enabled", config_.catchup_enabled},
-        {"scan_interval", config_.scan_interval_seconds}
-    };
-
+    json stats;
+    
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
+        stats = {
+            {"is_running", is_running_.load()},
+            {"frames_fetched", frames_fetched_.load()},
+            {"frames_failed", frames_failed_.load()},
+            {"last_fetch_timestamp", last_fetch_timestamp_.load()},
+            {"monitored_stations", config_.monitored_stations},
+            {"max_frames_per_station", config_.max_frames_per_station},
+            {"catchup_enabled", config_.catchup_enabled},
+            {"scan_interval", config_.scan_interval_seconds}
+        };
+
         if (fetch_thread_pool_) {
             stats["thread_pool"] = {
                 {"worker_count", fetch_thread_pool_->worker_count()},
@@ -825,12 +880,25 @@ json BackgroundFrameFetcher::get_statistics() const {
             };
         }
         
+        if (buffer_pool_) {
+            stats["buffer_pool"] = {
+                {"total_buffers", buffer_pool_->total_buffers()},
+                {"available_buffers", buffer_pool_->available_buffers()},
+                {"buffer_size", buffer_pool_->buffer_size()}
+            };
+        }
+
         {
             std::lock_guard<std::mutex> lock(active_scans_mutex_);
             stats["active_discovery_scans"] = {
                 {"count", active_scans_.size()},
                 {"stations", active_scans_}
             };
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(discovery_mutex_);
+            stats["discovery_queue_size"] = discovery_queue_.size();
         }
     }
 

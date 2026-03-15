@@ -58,7 +58,8 @@ struct AsyncWriteTask {
  * @brief Manages persistent storage and indexing of processed radar frames.
  * 
  * Data is stored hierarchically on disk and indexed via JSON files for fast lookup.
- * Supports asynchronous write operations to avoid blocking the main processing loop.
+ * This class is thread-safe and supports multiple readers via std::shared_mutex.
+ * It also supports asynchronous write operations to avoid blocking the main processing loop.
  */
 class FrameStorageManager {
 public:
@@ -205,6 +206,11 @@ public:
         return write_queue_.size();
     }
     
+    size_t index_cache_size() const {
+        std::shared_lock<std::shared_mutex> lock(index_mutex_);
+        return index_cache_.size();
+    }
+
 private:
     std::string base_path_;
     mutable std::shared_mutex index_mutex_;

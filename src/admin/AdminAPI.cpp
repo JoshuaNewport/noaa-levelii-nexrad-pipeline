@@ -2,6 +2,7 @@
 #include "levelii/admin/WebServer.h"
 #include "levelii/BackgroundFrameFetcher.h"
 #include "levelii/FrameStorageManager.h"
+#include "levelii/Version.h"
 #include <chrono>
 #include <ctime>
 
@@ -108,41 +109,50 @@ json AdminAPI::handle_get_metrics() {
         now - g_start_time
     ).count();
     
-    uint64_t fetched = 0, failed = 0;
-    json metrics{
-        {"frames_fetched", 0},
-        {"frames_failed", 0},
-        {"success_rate", 0.0},
-        {"disk_usage_mb", 0},
-        {"disk_usage_gb", 0.0},
-        {"frame_count", 0},
-        {"avg_frames_per_minute", 0.0},
-        {"uptime_seconds", uptime_seconds},
-        {"last_fetch_timestamp", 0}
-    };
+    json metrics;
+    metrics["version"] = NEXRAD_PIPELINE_VERSION;
     
     if (fetcher_) {
-        auto stats = fetcher_->get_statistics();
-        fetched = stats.value("frames_fetched", 0);
-        failed = stats.value("frames_failed", 0);
-        metrics["frames_fetched"] = fetched;
-        metrics["frames_failed"] = failed;
-        metrics["last_fetch_timestamp"] = stats.value("last_fetch_timestamp", 0);
+        metrics = fetcher_->get_statistics();
+        metrics["version"] = NEXRAD_PIPELINE_VERSION;
+        
+        uint64_t fetched = metrics.value("frames_fetched", 0);
+        uint64_t failed = metrics.value("frames_failed", 0);
         
         if (uptime_seconds > 0) {
             metrics["avg_frames_per_minute"] = (double(fetched) / uptime_seconds) * 60.0;
+        } else {
+            metrics["avg_frames_per_minute"] = 0.0;
         }
+        
         if ((fetched + failed) > 0) {
             metrics["success_rate"] = (double(fetched) / (fetched + failed)) * 100.0;
+        } else {
+            metrics["success_rate"] = 0.0;
         }
+    } else {
+        metrics = {
+            {"frames_fetched", 0},
+            {"frames_failed", 0},
+            {"success_rate", 0.0},
+            {"avg_frames_per_minute", 0.0},
+            {"last_fetch_timestamp", 0}
+        };
     }
+    
+    metrics["uptime_seconds"] = uptime_seconds;
     
     if (storage_) {
         auto disk_usage = storage_->get_total_disk_usage();
-        auto frame_count = storage_->get_frame_count();
         metrics["disk_usage_mb"] = disk_usage / (1024 * 1024);
         metrics["disk_usage_gb"] = (double)disk_usage / (1024 * 1024 * 1024);
-        metrics["frame_count"] = frame_count;
+        metrics["frame_count"] = storage_->get_frame_count();
+        metrics["index_cache_size"] = storage_->index_cache_size();
+        metrics["storage_pending_tasks"] = storage_->num_pending_tasks();
+    } else {
+        metrics["disk_usage_mb"] = 0;
+        metrics["disk_usage_gb"] = 0.0;
+        metrics["frame_count"] = 0;
     }
     
     return metrics;
@@ -153,6 +163,7 @@ json AdminAPI::handle_get_status() {
     return json{
         {"status", "operational"},
         {"fetcher_running", running},
+        {"version", NEXRAD_PIPELINE_VERSION},
         {"timestamp", std::time(nullptr)}
     };
 }

@@ -15,7 +15,19 @@ std::mutex AWSInitializer::instance_mutex_;
 AWSInitializer::AWSInitializer() = default;
 
 AWSInitializer::~AWSInitializer() {
-    shutdown();
+    bool should_shutdown = false;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (initialized_) {
+            should_shutdown = true;
+            s3_client_.reset();
+            initialized_ = false;
+        }
+    }
+    
+    if (should_shutdown) {
+        Aws::ShutdownAPI(aws_options_);
+    }
 }
 
 AWSInitializer& AWSInitializer::instance() {
@@ -66,15 +78,19 @@ void AWSInitializer::initialize_async() {
 }
 
 void AWSInitializer::shutdown() {
-    std::lock_guard<std::mutex> lock(state_mutex_);
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
 
-    if (!initialized_) {
-        return;
+        if (!initialized_) {
+            return;
+        }
+
+        s3_client_.reset();
+        
+        initialized_ = false;
     }
 
-    s3_client_.reset();
     Aws::ShutdownAPI(aws_options_);
-    initialized_ = false;
 
     std::cout << "✅ AWS SDK shutdown complete" << std::endl;
 }

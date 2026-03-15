@@ -240,10 +240,12 @@ public:
                 if (is_new_sweep) {
                     current_sweep_idx++;
                     current_sweep_elevation = elevation;
+                    current_elev_num = 0xFF;
                     for (auto& pair : frames) {
                         RadarFrame::Sweep sweep;
                         sweep.index = current_sweep_idx;
                         sweep.elevation_deg = elevation;
+                        sweep.elevation_num = 0xFF;
                         // Reserve reasonable initial capacity to reduce reallocations
                         // Typical high-res sweep has ~720 radials * 1800 gates / 1 (DOWNSAMPLE)
                         // but many gates are empty. 500k floats is ~2MB.
@@ -258,6 +260,10 @@ public:
                 
                 for (auto& pair : frames) {
                     auto& frame = *pair.second;
+                    if (static_cast<size_t>(current_sweep_idx) >= frame.sweeps.size()) {
+                        if (VERBOSE_LOGGING) std::cerr << "⚠️  Sweep index " << current_sweep_idx << " out of bounds for frame (size: " << frame.sweeps.size() << ")" << std::endl;
+                        continue;
+                    }
                     frame.sweeps[current_sweep_idx].ray_count++;
                     
                     if (product_to_moment[pair.first] == 1 && payload_size >= 46) {
@@ -355,7 +361,13 @@ public:
                     int active_key = RadarFrame::get_tilt_key(current_sweep_elevation);
                     (*elevation_ray_counts)[active_key]++;
                     
-                    for (auto& pair : frames) pair.second->sweeps[current_sweep_idx].ray_count++;
+                    for (auto& pair : frames) {
+                        if (static_cast<size_t>(current_sweep_idx) >= pair.second->sweeps.size()) {
+                            if (VERBOSE_LOGGING) std::cerr << "⚠️  Message 31: Sweep index " << current_sweep_idx << " out of bounds (size: " << pair.second->sweeps.size() << ")" << std::endl;
+                            continue;
+                        }
+                        pair.second->sweeps[current_sweep_idx].ray_count++;
+                    }
 
                     for (uint16_t b = 0; b < block_count; ++b) {
                         uint32_t b_off = read_be<uint32_t>(reinterpret_cast<const uint8_t*>(&m31->block_pointers[b]));
@@ -390,7 +402,9 @@ public:
                                 uint16_t ur = read_be<uint16_t>(reinterpret_cast<const uint8_t*>(&(*rad_opt)->unambiguous_range));
                                 for (auto& pair : frames) {
                                     auto& f = *pair.second;
-                                    if (nyq > 0) { f.nyquist_velocity[active_key] = nyq; f.sweeps[current_sweep_idx].nyquist_velocity = nyq; }
+                                    if (static_cast<size_t>(current_sweep_idx) < f.sweeps.size()) {
+                                        if (nyq > 0) { f.nyquist_velocity[active_key] = nyq; f.sweeps[current_sweep_idx].nyquist_velocity = nyq; }
+                                    }
                                     if (ur > 0) { f.unambiguous_range_meters = static_cast<float>(ur) * 100.0f; f.max_range_meters = std::max(f.max_range_meters, f.unambiguous_range_meters); }
                                 }
                             }
@@ -425,6 +439,11 @@ public:
                                 
                                 if (!is_target) continue;
                                 auto& f = *pair.second;
+                                if (static_cast<size_t>(current_sweep_idx) >= f.sweeps.size()) {
+                                    if (VERBOSE_LOGGING) std::cerr << "⚠️  Moment block: Sweep index " << current_sweep_idx << " out of bounds (size: " << f.sweeps.size() << ")" << std::endl;
+                                    continue;
+                                }
+                                
                                 if (f.ngates == 0 && ng > 10) { 
                                     f.ngates = (ng + DOWNSAMPLE_GATES - 1) / DOWNSAMPLE_GATES; 
                                     f.gate_spacing_meters = gs * DOWNSAMPLE_GATES; 
