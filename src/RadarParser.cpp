@@ -15,6 +15,13 @@
 #include <cmath>
 #include <chrono>
 
+#if defined(__x86_64__) || defined(_M_X64)
+#include <x86intrin.h>
+#define PREFETCH_READ _mm_prefetch
+#else
+#define PREFETCH_READ(a) ((void)0)
+#endif
+
 namespace {
 
 constexpr bool VERBOSE_LOGGING = false;
@@ -294,16 +301,19 @@ public:
                             if (frame.sweeps[current_sweep_idx].bins.empty()) {
                                 frame.sweeps[current_sweep_idx].bins.reserve(num_gates * 3);
                             }
-                                for (uint16_t g = 0; g < num_gates; g += DOWNSAMPLE_GATES) {
+                                for (uint16_t g = 0; g + DOWNSAMPLE_GATES <= num_gates; g += DOWNSAMPLE_GATES) {
                                     uint8_t raw_value = gate_data[g];
-                                    if (raw_value <= 1) continue;
-                                    float value = (static_cast<float>(raw_value) - 66.0f) * 0.5f;
-                                    if (value < -32.0f) continue;
-                                    value = quantize_value_internal(value, QUANTIZE_VALUES_DEFAULT);
-                                    float range_m = first_gate_m + static_cast<float>(g) * gate_size_m;
-                                    frame.sweeps[current_sweep_idx].bins.push_back(azimuth);
-                                    frame.sweeps[current_sweep_idx].bins.push_back(range_m);
-                                    frame.sweeps[current_sweep_idx].bins.push_back(value);
+                                    if (raw_value > 1) {
+                                        float value = (static_cast<float>(raw_value) - 66.0f) * 0.5f;
+                                        if (__builtin_expect(value >= -32.0f, true)) {
+                                            value = quantize_value_internal(value, QUANTIZE_VALUES_DEFAULT);
+                                            float range_m = first_gate_m + static_cast<float>(g) * gate_size_m;
+                                            auto& sweep_bins = frame.sweeps[current_sweep_idx].bins;
+                                            sweep_bins.push_back(azimuth);
+                                            sweep_bins.push_back(range_m);
+                                            sweep_bins.push_back(value);
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -455,16 +465,20 @@ public:
                                     f.sweeps[current_sweep_idx].bins.reserve(ng * 3);
                                 }
                                 
-                                for (uint16_t g = 0; g < ng; g += DOWNSAMPLE_GATES) {
+                                auto& sweep_bins = f.sweeps[current_sweep_idx].bins;
+                                for (uint16_t g = 0; g + DOWNSAMPLE_GATES <= ng; g += DOWNSAMPLE_GATES) {
                                     uint16_t raw = (ws == 16) ? read_be<uint16_t>(gdata + g * 2) : gdata[g];
-                                    if (raw <= 1) continue;
-                                    float val = (static_cast<float>(raw) - ov) / sc;
-                                    if (tm == 1 && val < -32.0f) continue;
-                                    val = quantize_value_internal(val, QUANTIZE_VALUES_DEFAULT);
-                                    float range_m = fg + static_cast<float>(g) * gs;
-                                    f.sweeps[current_sweep_idx].bins.push_back(azimuth);
-                                    f.sweeps[current_sweep_idx].bins.push_back(range_m);
-                                    f.sweeps[current_sweep_idx].bins.push_back(val);
+                                    if (__builtin_expect(raw > 1, true)) {
+                                        float val = (static_cast<float>(raw) - ov) / sc;
+                                        bool keep = (tm != 1 || __builtin_expect(val >= -32.0f, true));
+                                        if (__builtin_expect(keep, true)) {
+                                            val = quantize_value_internal(val, QUANTIZE_VALUES_DEFAULT);
+                                            float range_m = fg + static_cast<float>(g) * gs;
+                                            sweep_bins.push_back(azimuth);
+                                            sweep_bins.push_back(range_m);
+                                            sweep_bins.push_back(val);
+                                        }
+                                    }
                                 }
                             }
                         }

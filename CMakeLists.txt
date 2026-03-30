@@ -4,6 +4,11 @@ project(LevelIIProcessor LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    add_compile_options(-O3 -march=native -mtune=native -ffast-math -funroll-loops)
+    add_compile_options(-Wall)
+endif()
+
 # Options
 option(ENABLE_TESTING "Build test executables" OFF)
 

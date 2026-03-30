@@ -14,7 +14,7 @@ std::vector<uint8_t> gzip_compress(const uint8_t* data, size_t data_size) {
     stream.zfree = Z_NULL;
     stream.opaque = Z_NULL;
     
-    if (deflateInit2(&stream, Z_BEST_COMPRESSION, Z_DEFLATED, 
+    if (deflateInit2(&stream, Z_BEST_SPEED, Z_DEFLATED, 
                      15 + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
         return compressed;
     }
