@@ -69,7 +69,8 @@ Save to `{@artifacts_path}/plan.md`.
 - Add explicit `decompressed.clear()` and error checks for `BZ2_bzDecompress` return values.
 - **Verification**: Run `unit_tests` in `test/code_tests/unit/`.
 
-### [ ] Step: Phase 3: BufferPool Hardening
+### [x] Step: Phase 3: BufferPool Hardening
+<!-- chat-id: dab8bdf7-b8f5-4a4e-a5e5-dbc7de0c596c -->
 - Add logging to `BufferPool` acquisition/release and shutdown.
 - Ensure `BufferPool::release` is robust against double-release and shutdown races.
 - **Verification**: Run `deadlock_simulation` and `repro_munmap` scripts.

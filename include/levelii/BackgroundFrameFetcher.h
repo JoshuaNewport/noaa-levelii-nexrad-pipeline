@@ -83,6 +83,11 @@ public:
     bool is_shutdown() const { return stop_; }
 
     /**
+     * @brief Set whether logging is enabled for this buffer pool.
+     */
+    void set_logging_enabled(bool enabled) { logging_enabled_.store(enabled); }
+
+    /**
      * @brief Get statistics for the buffer pool.
      */
     size_t total_buffers() const { return buffers_.size(); }
@@ -96,9 +101,11 @@ private:
     size_t buffer_size_;
     std::vector<std::unique_ptr<std::vector<uint8_t>>> buffers_;
     std::queue<std::vector<uint8_t>*> available_;
+    std::set<std::vector<uint8_t>*> in_use_;
     mutable std::mutex mutex_;
     std::condition_variable cv_;
-    bool stop_{false};
+    std::atomic<bool> stop_{false};
+    std::atomic<bool> logging_enabled_{false};
 };
 
 /**
@@ -202,7 +209,7 @@ public:
     void remove_monitored_station(const std::string& station);
     void set_monitored_stations(const std::set<std::string>& stations);
     std::set<std::string> get_monitored_stations() const;
-    void set_logging_enabled(bool enabled) { logging_enabled_.store(enabled); }
+    void set_logging_enabled(bool enabled);
 
     /**
      * @brief Update the fetcher's configuration at runtime.

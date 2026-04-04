@@ -72,16 +72,35 @@ BufferPool::BufferPool(size_t num_buffers, size_t buffer_size) : buffer_size_(bu
 
 std::vector<uint8_t>* BufferPool::acquire() {
     std::unique_lock<std::mutex> lock(mutex_);
+    if (logging_enabled_) {
+        std::cout << "📥 BufferPool: acquiring buffer (available: " << available_.size() 
+                  << ", in_use: " << in_use_.size() << ")" << std::endl;
+    }
     cv_.wait(lock, [this] { return !available_.empty() || stop_; });
-    if (stop_ && available_.empty()) return nullptr;
+    if (stop_ && available_.empty()) {
+        if (logging_enabled_) {
+            std::cout << "📥 BufferPool: acquisition failed (shutting down)" << std::endl;
+        }
+        return nullptr;
+    }
     auto* buf = available_.front();
     available_.pop();
+    in_use_.insert(buf);
     return buf;
 }
 
 void BufferPool::release(std::vector<uint8_t>* buffer) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (buffer) {
+        if (in_use_.find(buffer) == in_use_.end()) {
+            if (logging_enabled_) {
+                std::cerr << "⚠️  BufferPool: warning - double-release or untracked buffer release attempted" << std::endl;
+            }
+            return;
+        }
+        
+        in_use_.erase(buffer);
+        
         // Optimization: Shrink if buffer grew significantly beyond initial reservation
         // This reclaims memory after processing unusually large compressed frames
         if (buffer->capacity() > buffer_size_ * 2) {
@@ -90,9 +109,18 @@ void BufferPool::release(std::vector<uint8_t>* buffer) {
         } else {
             buffer->clear();
         }
+        
         if (!stop_) {
             available_.push(buffer);
+            if (logging_enabled_) {
+                std::cout << "📤 BufferPool: released buffer (available: " << available_.size() 
+                          << ", in_use: " << in_use_.size() << ")" << std::endl;
+            }
             cv_.notify_one();
+        } else {
+            if (logging_enabled_) {
+                std::cout << "📤 BufferPool: buffer dropped because pool is shut down" << std::endl;
+            }
         }
     }
 }
@@ -100,6 +128,9 @@ void BufferPool::release(std::vector<uint8_t>* buffer) {
 void BufferPool::shutdown() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (logging_enabled_) {
+            std::cout << "🛑 BufferPool: shutting down (outstanding: " << in_use_.size() << ")" << std::endl;
+        }
         stop_ = true;
     }
     cv_.notify_all();
@@ -204,6 +235,14 @@ std::set<std::string> BackgroundFrameFetcher::get_monitored_stations() const {
     return config_.monitored_stations;
 }
 
+void BackgroundFrameFetcher::set_logging_enabled(bool enabled) {
+    logging_enabled_.store(enabled);
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (buffer_pool_) {
+        buffer_pool_->set_logging_enabled(enabled);
+    }
+}
+
 void BackgroundFrameFetcher::reconfigure(const FrameFetcherConfig& new_config) {
     bool pools_changed = false;
     {
@@ -260,6 +299,7 @@ void BackgroundFrameFetcher::reinitialize_pools() {
     auto new_fetch_pool = std::make_shared<ThreadPool>(fetch_threads, max_queue_size);
     auto new_disc_pool = std::make_shared<ThreadPool>(disc_threads, max_queue_size);
     auto new_buffer_pool = std::make_shared<BufferPool>(actual_buffer_pool_size, buffer_size);
+    new_buffer_pool->set_logging_enabled(logging_enabled_.load());
 
     std::shared_ptr<ThreadPool> old_fetch_pool;
     std::shared_ptr<ThreadPool> old_disc_pool;
