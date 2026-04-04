@@ -484,11 +484,13 @@ void BackgroundFrameFetcher::process_discovery_batch(const DiscoveryBatch& batch
         raw_data->clear();
         
         char temp_buf[65536];
-        while (stream.read(temp_buf, sizeof(temp_buf)) && !is_stopped()) {
-            raw_data->insert(raw_data->end(), temp_buf, temp_buf + stream.gcount());
-        }
-        if (stream.gcount() > 0 && !is_stopped()) {
-            raw_data->insert(raw_data->end(), temp_buf, temp_buf + stream.gcount());
+        while (!is_stopped()) {
+            stream.read(temp_buf, sizeof(temp_buf));
+            std::streamsize bytes_read = stream.gcount();
+            if (bytes_read > 0) {
+                raw_data->insert(raw_data->end(), temp_buf, temp_buf + bytes_read);
+            }
+            if (!stream) break;
         }
 
         if (is_stopped()) break;

@@ -60,7 +60,7 @@ struct Message31Header {
     uint8_t radial_blanking;    // Radial Blanking Status
     uint8_t az_indexing_mode;   // Azimuth Indexing Mode
     uint16_t block_count;       // Data Block Count (Big Endian)
-    uint32_t block_pointers[1]; // Data Block Pointers (Big Endian, offset from Message 31 start). Variable length.
+    uint32_t block_pointers[9]; // Data Block Pointers (Big Endian, offset from Message 31 start). Fixed size 9 as per ICD.
 };
 
 /**
@@ -156,7 +156,7 @@ struct DataBlock_Moment {
 namespace {
     constexpr size_t VOLUME_HEADER_SIZE = sizeof(VolumeHeader);
     constexpr size_t MESSAGE_HEADER_SIZE = sizeof(MessageHeader);
-    constexpr size_t MESSAGE31_HEADER_MIN_SIZE = 102; // Without variable block_pointers
+    constexpr size_t MESSAGE31_HEADER_MIN_SIZE = sizeof(Message31Header); // Includes 9 block pointers
     constexpr size_t DATABLOCK_HEADER_SIZE = sizeof(DataBlock_Header);
     constexpr size_t DATABLOCK_VOLUME_SIZE = sizeof(DataBlock_Volume);
     constexpr size_t DATABLOCK_ELEVATION_SIZE = sizeof(DataBlock_Elevation);

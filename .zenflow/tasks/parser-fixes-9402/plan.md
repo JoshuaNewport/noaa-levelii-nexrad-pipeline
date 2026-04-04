@@ -57,7 +57,8 @@ If the feature is trivial and doesn't warrant full specification, update this wo
 
 Save to `{@artifacts_path}/plan.md`.
 
-### [ ] Step: Phase 1: Integrity Fixes
+### [x] Step: Phase 1: Integrity Fixes
+<!-- chat-id: a3e43200-a1fc-44d9-b7d4-80310d4b3d95 -->
 - Update `include/levelii/NEXRAD_Types.h` to complete `Message31Header` struct definition.
 - Fix S3 read loop in `src/BackgroundFrameFetcher.cpp` to prevent double-insertion and improve robustness.
 - **Verification**: Run `test_fuzz_corrupt_data` and verify no struct-related crashes.
