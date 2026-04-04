@@ -40,7 +40,8 @@ Save to `{@artifacts_path}/spec.md` with:
 - Delivery phases (incremental, testable milestones)
 - Verification approach using project lint/test commands
 
-### [ ] Step: Planning
+### [x] Step: Planning
+<!-- chat-id: 3097bccb-f1a4-472c-bb99-4f012ad0a0e2 -->
 
 Create a detailed implementation plan based on `{@artifacts_path}/spec.md`.
 
@@ -56,8 +57,22 @@ If the feature is trivial and doesn't warrant full specification, update this wo
 
 Save to `{@artifacts_path}/plan.md`.
 
-### [ ] Step: Implementation
+### [ ] Step: Phase 1: Integrity Fixes
+- Update `include/levelii/NEXRAD_Types.h` to complete `Message31Header` struct definition.
+- Fix S3 read loop in `src/BackgroundFrameFetcher.cpp` to prevent double-insertion and improve robustness.
+- **Verification**: Run `test_fuzz_corrupt_data` and verify no struct-related crashes.
 
-This step should be replaced with detailed implementation tasks from the Planning step.
+### [ ] Step: Phase 2: Decompression Safety
+- Refactor `src/DecompressionUtils.cpp` to use safer vector growth logic and handle potential 32-bit wrap-around.
+- Add explicit `decompressed.clear()` and error checks for `BZ2_bzDecompress` return values.
+- **Verification**: Run `unit_tests` in `test/code_tests/unit/`.
 
-If Planning didn't replace this step, execute the tasks in `{@artifacts_path}/plan.md`, updating checkboxes as you go. Run planned tests/lint and record results in plan.md.
+### [ ] Step: Phase 3: BufferPool Hardening
+- Add logging to `BufferPool` acquisition/release and shutdown.
+- Ensure `BufferPool::release` is robust against double-release and shutdown races.
+- **Verification**: Run `deadlock_simulation` and `repro_munmap` scripts.
+
+### [ ] Step: Phase 4: Validation
+- Build with AddressSanitizer (ASan) and run `benchmark_memory_concurrency`.
+- Verify no memory errors are reported during long-duration runs of `repro_munmap`.
+- **Verification**: All integration tests pass under ASan.
