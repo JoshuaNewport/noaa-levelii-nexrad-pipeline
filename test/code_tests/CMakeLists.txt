@@ -77,6 +77,11 @@ target_include_directories(deadlock_simulation PRIVATE ${CMAKE_CURRENT_SOURCE_DI
 target_link_libraries(deadlock_simulation PRIVATE levelii_BackgroundFrameFetcher levelii_ThreadPool)
 add_test(NAME integration_deadlock_simulation COMMAND deadlock_simulation)
 
+add_executable(repro_munmap integration/repro_munmap.cpp)
+target_include_directories(repro_munmap PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+target_link_libraries(repro_munmap PRIVATE levelii_BackgroundFrameFetcher levelii_RadarParser levelii_FrameStorageManager)
+add_test(NAME integration_repro_munmap COMMAND repro_munmap)
+
 # Fuzz tests
 add_executable(test_fuzz_corrupt_data fuzz/test_fuzz_corrupt_data.cpp)
 target_include_directories(test_fuzz_corrupt_data PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
