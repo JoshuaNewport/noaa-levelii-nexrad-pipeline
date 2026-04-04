@@ -1,0 +1,2 @@
+/usr/bin/ar qc liblevelii_DecompressionUtils.a CMakeFiles/levelii_DecompressionUtils.dir/src/DecompressionUtils.cpp.o
+/usr/bin/ranlib liblevelii_DecompressionUtils.a

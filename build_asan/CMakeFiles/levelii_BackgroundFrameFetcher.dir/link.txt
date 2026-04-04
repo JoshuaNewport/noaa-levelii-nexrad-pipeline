@@ -1,0 +1,2 @@
+/usr/bin/ar qc liblevelii_BackgroundFrameFetcher.a CMakeFiles/levelii_BackgroundFrameFetcher.dir/src/BackgroundFrameFetcher.cpp.o CMakeFiles/levelii_BackgroundFrameFetcher.dir/src/TerminalUI.cpp.o
+/usr/bin/ranlib liblevelii_BackgroundFrameFetcher.a

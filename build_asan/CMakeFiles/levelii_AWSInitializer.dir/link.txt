@@ -1,0 +1,2 @@
+/usr/bin/ar qc liblevelii_AWSInitializer.a CMakeFiles/levelii_AWSInitializer.dir/src/AWSInitializer.cpp.o
+/usr/bin/ranlib liblevelii_AWSInitializer.a

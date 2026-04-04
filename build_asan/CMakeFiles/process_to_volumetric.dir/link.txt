@@ -1,0 +1,1 @@
+/usr/bin/c++ -fsanitize=address -g -fsanitize=address CMakeFiles/process_to_volumetric.dir/src/process_to_volumetric.cpp.o -o process_to_volumetric  liblevelii_FrameStorageManager.a liblevelii_RadarParser.a -lstdc++fs /usr/lib/x86_64-linux-gnu/libz.so liblevelii_DecompressionUtils.a /usr/lib/x86_64-linux-gnu/libbz2.so 

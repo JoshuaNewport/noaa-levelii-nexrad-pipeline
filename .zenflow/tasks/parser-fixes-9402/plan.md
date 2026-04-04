@@ -75,7 +75,8 @@ Save to `{@artifacts_path}/plan.md`.
 - Ensure `BufferPool::release` is robust against double-release and shutdown races.
 - **Verification**: Run `deadlock_simulation` and `repro_munmap` scripts.
 
-### [ ] Step: Phase 4: Validation
+### [x] Step: Phase 4: Validation
+<!-- chat-id: 18a833ed-bea7-4dfe-83a6-5234db448c97 -->
 - Build with AddressSanitizer (ASan) and run `benchmark_memory_concurrency`.
 - Verify no memory errors are reported during long-duration runs of `repro_munmap`.
 - **Verification**: All integration tests pass under ASan.

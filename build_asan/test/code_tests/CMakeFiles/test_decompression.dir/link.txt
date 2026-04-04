@@ -1,0 +1,1 @@
+/usr/bin/c++ -fsanitize=address -g -fsanitize=address CMakeFiles/test_decompression.dir/unit/test_decompression.cpp.o -o test_decompression  ../../liblevelii_RadarParser.a ../../liblevelii_DecompressionUtils.a /usr/lib/x86_64-linux-gnu/libbz2.so 

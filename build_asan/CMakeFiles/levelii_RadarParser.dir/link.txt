@@ -1,0 +1,2 @@
+/usr/bin/ar qc liblevelii_RadarParser.a CMakeFiles/levelii_RadarParser.dir/src/RadarParser.cpp.o CMakeFiles/levelii_RadarParser.dir/src/RadarFrame.cpp.o CMakeFiles/levelii_RadarParser.dir/src/VolumetricGenerator.cpp.o
+/usr/bin/ranlib liblevelii_RadarParser.a

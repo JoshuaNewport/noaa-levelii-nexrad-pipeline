@@ -1,0 +1,2 @@
+/usr/bin/ar qc liblevelii_ThreadPool.a CMakeFiles/levelii_ThreadPool.dir/src/ThreadPool.cpp.o
+/usr/bin/ranlib liblevelii_ThreadPool.a

@@ -1,0 +1,2 @@
+/usr/bin/ar qc liblevelii_FrameStorageManager.a CMakeFiles/levelii_FrameStorageManager.dir/src/FrameStorageManager.cpp.o CMakeFiles/levelii_FrameStorageManager.dir/src/ZlibUtils.cpp.o
+/usr/bin/ranlib liblevelii_FrameStorageManager.a

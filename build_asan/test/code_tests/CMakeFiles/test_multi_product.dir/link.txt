@@ -1,0 +1,1 @@
+/usr/bin/c++ -fsanitize=address -g -fsanitize=address CMakeFiles/test_multi_product.dir/unit/test_multi_product.cpp.o -o test_multi_product  ../../liblevelii_RadarParser.a ../../liblevelii_DecompressionUtils.a /usr/lib/x86_64-linux-gnu/libbz2.so 

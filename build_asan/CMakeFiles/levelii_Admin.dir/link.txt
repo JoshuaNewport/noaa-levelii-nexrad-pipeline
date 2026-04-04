@@ -1,0 +1,2 @@
+/usr/bin/ar qc liblevelii_Admin.a CMakeFiles/levelii_Admin.dir/src/admin/AdminAPI.cpp.o CMakeFiles/levelii_Admin.dir/src/admin/AdminServer.cpp.o CMakeFiles/levelii_Admin.dir/src/admin/WebServer.cpp.o
+/usr/bin/ranlib liblevelii_Admin.a
