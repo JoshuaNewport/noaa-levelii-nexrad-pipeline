@@ -7,6 +7,8 @@
 #include <bzlib.h>
 #include <iostream>
 #include <cstring>
+#include <limits>
+#include <algorithm>
 
 namespace RadarDecompression {
 
@@ -20,12 +22,15 @@ constexpr bool VERBOSE_LOGGING = false;
 // ============================================================================
 bool decompress_bz2_raw(const uint8_t* data, size_t size, 
                         std::vector<uint8_t>& decompressed) {
+    decompressed.clear();
     if (size == 0) return false;
     
-    // OPTIMIZATION 1: Better initial size estimate for NEXRAD data
+    // Safety Check: Avoid extreme pre-allocation if size is massive
     // Typical NEXRAD bz2 compression ratio is ~8-10x
-    // Pre-allocate 8x to minimize reallocations
-    decompressed.resize(size * 8);
+    // Limit initial guess to 100MB to avoid OOM on corrupt headers
+    constexpr size_t MAX_INITIAL_ALLOC = 100 * 1024 * 1024;
+    size_t initial_guess = std::min(size * 8, MAX_INITIAL_ALLOC);
+    decompressed.resize(initial_guess);
     
     bz_stream stream;
     stream.bzalloc = nullptr;
@@ -38,27 +43,41 @@ bool decompress_bz2_raw(const uint8_t* data, size_t size,
     
     // OPTIMIZATION 2: Use small=0 for maximum speed (uses more memory but faster)
     int ret = BZ2_bzDecompressInit(&stream, 0, 0);
-    if (ret != BZ_OK) return false;
+    if (ret != BZ_OK) {
+        decompressed.clear();
+        return false;
+    }
     
     while (true) {
         ret = BZ2_bzDecompress(&stream);
         
         if (ret == BZ_STREAM_END) {
-            // OPTIMIZATION 3: Just resize, don't shrink_to_fit (expensive!)
-            decompressed.resize(stream.total_out_lo32);
+            // Handle 32-bit wrap-around for total_out
+            uint64_t total_out = (static_cast<uint64_t>(stream.total_out_hi32) << 32) | 
+                                 static_cast<uint64_t>(stream.total_out_lo32);
+            decompressed.resize(total_out);
             BZ2_bzDecompressEnd(&stream);
             return true;
         }
         
         if (ret != BZ_OK) {
             BZ2_bzDecompressEnd(&stream);
+            decompressed.clear();
             return false;
         }
         
         // OPTIMIZATION 4: Grow by 1.5x for fewer reallocations while reducing memory waste
         if (stream.avail_out == 0) {
             size_t old_size = decompressed.size();
+            // Check for overflow before growing
+            if (old_size > (std::numeric_limits<size_t>::max() / 3) * 2) {
+                BZ2_bzDecompressEnd(&stream);
+                decompressed.clear();
+                return false;
+            }
             size_t grow_size = old_size >> 1;  // 0.5x = 1.5x total
+            if (grow_size < 4096) grow_size = 4096; // Minimum growth
+            
             decompressed.resize(old_size + grow_size);
             stream.avail_out = grow_size;
             stream.next_out = reinterpret_cast<char*>(decompressed.data() + old_size);
@@ -120,8 +139,18 @@ bool decompress_ldm(const std::vector<uint8_t>& data,
         
         // Initial output buffer size (8x estimate)
         size_t out_offset = decompressed.size();
-        decompressed.resize(out_offset + block_size * 8);
-        stream.avail_out = block_size * 8;
+        
+        // Safety Check: Avoid extreme pre-allocation
+        constexpr size_t MAX_BLOCK_INITIAL_ALLOC = 50 * 1024 * 1024;
+        size_t block_initial_guess = std::min(block_size * 8, MAX_BLOCK_INITIAL_ALLOC);
+        
+        // Check for overflow before resize
+        if (std::numeric_limits<size_t>::max() - out_offset < block_initial_guess) {
+            return false; // Total size overflow
+        }
+        
+        decompressed.resize(out_offset + block_initial_guess);
+        stream.avail_out = block_initial_guess;
         stream.next_out = reinterpret_cast<char*>(decompressed.data() + out_offset);
         
         int ret = BZ2_bzDecompressInit(&stream, 0, 0);
@@ -135,8 +164,10 @@ bool decompress_ldm(const std::vector<uint8_t>& data,
             ret = BZ2_bzDecompress(&stream);
             
             if (ret == BZ_STREAM_END) {
-                // Resize to actual decompressed size
-                decompressed.resize(out_offset + stream.total_out_lo32);
+                // Handle 32-bit wrap-around for total_out in current block
+                uint64_t total_out = (static_cast<uint64_t>(stream.total_out_hi32) << 32) | 
+                                     static_cast<uint64_t>(stream.total_out_lo32);
+                decompressed.resize(out_offset + total_out);
                 BZ2_bzDecompressEnd(&stream);
                 stream_count++;
                 stream_ok = true;
@@ -152,7 +183,17 @@ bool decompress_ldm(const std::vector<uint8_t>& data,
             // Grow output buffer if needed (1.5x)
             if (stream.avail_out == 0) {
                 size_t current_out_size = decompressed.size() - out_offset;
+                
+                // Check for overflow before growing
+                if (decompressed.size() > (std::numeric_limits<size_t>::max() / 3) * 2) {
+                    BZ2_bzDecompressEnd(&stream);
+                    decompressed.resize(out_offset);
+                    return false;
+                }
+                
                 size_t grow_size = current_out_size >> 1;
+                if (grow_size < 4096) grow_size = 4096;
+                
                 decompressed.resize(decompressed.size() + grow_size);
                 stream.avail_out = grow_size;
                 stream.next_out = reinterpret_cast<char*>(decompressed.data() + out_offset + current_out_size);

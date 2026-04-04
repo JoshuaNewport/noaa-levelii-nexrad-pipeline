@@ -63,7 +63,8 @@ Save to `{@artifacts_path}/plan.md`.
 - Fix S3 read loop in `src/BackgroundFrameFetcher.cpp` to prevent double-insertion and improve robustness.
 - **Verification**: Run `test_fuzz_corrupt_data` and verify no struct-related crashes.
 
-### [ ] Step: Phase 2: Decompression Safety
+### [x] Step: Phase 2: Decompression Safety
+<!-- chat-id: 5df9287c-4a6c-4321-9e8d-379f26e83457 -->
 - Refactor `src/DecompressionUtils.cpp` to use safer vector growth logic and handle potential 32-bit wrap-around.
 - Add explicit `decompressed.clear()` and error checks for `BZ2_bzDecompress` return values.
 - **Verification**: Run `unit_tests` in `test/code_tests/unit/`.
