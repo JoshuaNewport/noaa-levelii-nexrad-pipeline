@@ -61,6 +61,8 @@ For higher throughput, lower latency, and handling more stations concurrently:
   - Ubuntu 22.04+ or equivalent modern Linux distribution
 - **Network:** High-speed, low-latency internet connection
 
+> Running in “All Stations” mode or enabling 3D volumetric output benefits significantly from additional CPU cores and memory.
+
 ---
 
 ### Documentation

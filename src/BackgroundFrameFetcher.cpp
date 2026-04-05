@@ -24,6 +24,9 @@
 namespace {
     static const char* NEXRAD_BUCKET = "unidata-nexrad-level2";
 
+    /**
+     * ScanGuard - RAII class to track active station scans
+     */
     class ScanGuard {
     public:
         ScanGuard(std::string station, std::set<std::string>& active_scans, std::mutex& mutex)
@@ -54,6 +57,10 @@ void BackgroundFrameFetcher::log_error(const std::string& msg) const {
     }
 }
 
+// ============================================================================
+// BufferPool Implementation
+// ============================================================================
+
 BufferPool::BufferPool(size_t num_buffers, size_t buffer_size) : buffer_size_(buffer_size) {
     for (size_t i = 0; i < num_buffers; ++i) {
         auto buf = std::make_unique<std::vector<uint8_t>>();
@@ -65,25 +72,55 @@ BufferPool::BufferPool(size_t num_buffers, size_t buffer_size) : buffer_size_(bu
 
 std::vector<uint8_t>* BufferPool::acquire() {
     std::unique_lock<std::mutex> lock(mutex_);
+    if (logging_enabled_) {
+        std::cout << "📥 BufferPool: acquiring buffer (available: " << available_.size() 
+                  << ", in_use: " << in_use_.size() << ")" << std::endl;
+    }
     cv_.wait(lock, [this] { return !available_.empty() || stop_; });
-    if (stop_ && available_.empty()) return nullptr;
+    if (stop_ && available_.empty()) {
+        if (logging_enabled_) {
+            std::cout << "📥 BufferPool: acquisition failed (shutting down)" << std::endl;
+        }
+        return nullptr;
+    }
     auto* buf = available_.front();
     available_.pop();
+    in_use_.insert(buf);
     return buf;
 }
 
 void BufferPool::release(std::vector<uint8_t>* buffer) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (buffer) {
+        if (in_use_.find(buffer) == in_use_.end()) {
+            if (logging_enabled_) {
+                std::cerr << "⚠️  BufferPool: warning - double-release or untracked buffer release attempted" << std::endl;
+            }
+            return;
+        }
+        
+        in_use_.erase(buffer);
+        
+        // Optimization: Shrink if buffer grew significantly beyond initial reservation
+        // This reclaims memory after processing unusually large compressed frames
         if (buffer->capacity() > buffer_size_ * 2) {
             std::vector<uint8_t>().swap(*buffer);
             buffer->reserve(buffer_size_);
         } else {
             buffer->clear();
         }
+        
         if (!stop_) {
             available_.push(buffer);
+            if (logging_enabled_) {
+                std::cout << "📤 BufferPool: released buffer (available: " << available_.size() 
+                          << ", in_use: " << in_use_.size() << ")" << std::endl;
+            }
             cv_.notify_one();
+        } else {
+            if (logging_enabled_) {
+                std::cout << "📤 BufferPool: buffer dropped because pool is shut down" << std::endl;
+            }
         }
     }
 }
@@ -91,10 +128,17 @@ void BufferPool::release(std::vector<uint8_t>* buffer) {
 void BufferPool::shutdown() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (logging_enabled_) {
+            std::cout << "🛑 BufferPool: shutting down (outstanding: " << in_use_.size() << ")" << std::endl;
+        }
         stop_ = true;
     }
     cv_.notify_all();
 }
+
+// ============================================================================
+// BackgroundFrameFetcher Implementation
+// ============================================================================
 
 BackgroundFrameFetcher::BackgroundFrameFetcher(
     std::shared_ptr<FrameStorageManager> storage,
@@ -191,6 +235,14 @@ std::set<std::string> BackgroundFrameFetcher::get_monitored_stations() const {
     return config_.monitored_stations;
 }
 
+void BackgroundFrameFetcher::set_logging_enabled(bool enabled) {
+    logging_enabled_.store(enabled);
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (buffer_pool_) {
+        buffer_pool_->set_logging_enabled(enabled);
+    }
+}
+
 void BackgroundFrameFetcher::reconfigure(const FrameFetcherConfig& new_config) {
     bool pools_changed = false;
     {
@@ -247,6 +299,7 @@ void BackgroundFrameFetcher::reinitialize_pools() {
     auto new_fetch_pool = std::make_shared<ThreadPool>(fetch_threads, max_queue_size);
     auto new_disc_pool = std::make_shared<ThreadPool>(disc_threads, max_queue_size);
     auto new_buffer_pool = std::make_shared<BufferPool>(actual_buffer_pool_size, buffer_size);
+    new_buffer_pool->set_logging_enabled(logging_enabled_.load());
 
     std::shared_ptr<ThreadPool> old_fetch_pool;
     std::shared_ptr<ThreadPool> old_disc_pool;
@@ -278,6 +331,7 @@ void BackgroundFrameFetcher::discovery_loop() {
     while (!should_stop_.load()) {
         auto stations = get_monitored_stations();
         
+        // Handle "ALL" stations mode
         if (stations.count("ALL")) {
             auto s3_client = AWSInitializer::instance().get_s3_client();
             if (s3_client) {
@@ -306,6 +360,7 @@ void BackgroundFrameFetcher::discovery_loop() {
                     if (list_outcome.IsSuccess()) {
                         for (const auto& prefix : list_outcome.GetResult().GetCommonPrefixes()) {
                             std::string p = prefix.GetPrefix();
+                            // Prefix is "YYYY/MM/DD/STATION/"
                             size_t last_slash = p.find_last_of('/', p.size() - 2);
                             if (last_slash != std::string::npos) {
                                 std::string station = p.substr(last_slash + 1, p.size() - last_slash - 2);
@@ -314,7 +369,7 @@ void BackgroundFrameFetcher::discovery_loop() {
                         }
                     }
                 }
-                stations.erase("ALL");
+                stations.erase("ALL"); // Don't try to scan "ALL" as a station
             }
         }
         
@@ -326,10 +381,10 @@ void BackgroundFrameFetcher::discovery_loop() {
             }
 
             if (disc_pool) {
-                int queued = 0;
                 for (const auto& station : stations) {
                     if (should_stop_.load() || !disc_pool->is_running()) break;
                     
+                    // Only enqueue if not already scanning
                     {
                         std::lock_guard<std::mutex> lock(active_scans_mutex_);
                         if (active_scans_.count(station)) continue;
@@ -338,14 +393,11 @@ void BackgroundFrameFetcher::discovery_loop() {
                     disc_pool->enqueue([this, station]() {
                         this->fetch_frame_for_station(station);
                     });
-                    queued++;
-                }
-                if (queued > 0) {
-                    this->log_info("Queued " + std::to_string(queued) + " discovery tasks");
                 }
             }
         }
         
+        // Save state after each discovery cycle to persist last_processed_keys
         save_state_to_disk();
         
         int interval = 30;
@@ -354,6 +406,7 @@ void BackgroundFrameFetcher::discovery_loop() {
             interval = config_.scan_interval_seconds;
         }
         
+        // Sleep in increments to respond to shutdown quickly
         for (int i = 0; i < interval * 10 && !should_stop_.load(); ++i) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
@@ -364,7 +417,6 @@ void BackgroundFrameFetcher::discovery_loop() {
 
 void BackgroundFrameFetcher::fetch_loop() {
     this->log_info("Fetch loop started");
-    int idle_count = 0;
     while (!should_stop_.load()) {
         DiscoveryBatch batch;
         {
@@ -374,14 +426,7 @@ void BackgroundFrameFetcher::fetch_loop() {
             });
 
             if (should_stop_.load()) break;
-            if (discovery_queue_.empty()) {
-                idle_count++;
-                if (idle_count % 10 == 0) {
-                    this->log_info("Fetch loop idle, queue size: " + std::to_string(discovery_queue_.size()));
-                }
-                continue;
-            }
-            idle_count = 0;
+            if (discovery_queue_.empty()) continue;
 
             batch = std::move(discovery_queue_.front());
             discovery_queue_.pop();
@@ -399,13 +444,10 @@ void BackgroundFrameFetcher::fetch_loop() {
         }
 
         if (pool) {
-            this->log_info("Enqueuing batch for station: " + batch.station + " with " + std::to_string(batch.items.size()) + " items");
             pool->enqueue([this, batch = std::move(batch), config, buffer_pool]() {
                 std::string station = batch.station;
-                this->log_info("Processing batch for station: " + station);
                 try {
                     process_discovery_batch(batch, config, buffer_pool);
-                    this->log_info("Completed batch for station: " + station);
                 } catch (const std::exception& e) {
                     this->log_error("Error processing batch for " + station + ": " + e.what());
                     frames_failed_.fetch_add(1);
@@ -415,8 +457,6 @@ void BackgroundFrameFetcher::fetch_loop() {
                     station_stats_[station].last_fetch_timestamp = std::chrono::system_clock::now().time_since_epoch().count();
                 }
             });
-        } else {
-            this->log_error("Fetch thread pool is null!");
         }
     }
     this->log_info("Fetch loop stopped");
@@ -447,227 +487,240 @@ void BackgroundFrameFetcher::cleanup_loop() {
     this->log_info("Cleanup thread stopped");
 }
 
-void BackgroundFrameFetcher::process_single_frame(const DiscoveryItem& item, const FrameFetcherConfig& config, std::shared_ptr<BufferPool> buffer_pool) {
+void BackgroundFrameFetcher::process_discovery_batch(const DiscoveryBatch& batch, const FrameFetcherConfig& config, std::shared_ptr<BufferPool> buffer_pool) {
     using namespace Aws::S3::Model;
 
     auto s3_client = AWSInitializer::instance().get_s3_client();
     if (!s3_client || !buffer_pool) return;
 
-    GetObjectRequest get_req;
-    get_req.WithBucket(item.bucket).WithKey(item.key);
+    auto is_stopped = [&]() {
+        return should_stop_.load() || (buffer_pool && buffer_pool->is_shutdown());
+    };
 
-    auto get_outcome = s3_client->GetObject(get_req);
-    if (!get_outcome.IsSuccess()) {
-        this->log_error("Failed to get object " + item.key + ": " + get_outcome.GetError().GetMessage());
-        frames_failed_.fetch_add(1);
-        
-        std::lock_guard<std::mutex> lock(stats_mutex_);
-        station_stats_[item.station].frames_failed++;
-        station_stats_[item.station].last_fetch_timestamp = std::chrono::system_clock::now().time_since_epoch().count();
-        return;
-    }
+    for (const auto& item : batch.items) {
+        if (is_stopped()) break;
 
-    auto result = get_outcome.GetResultWithOwnership();
-    auto& stream = result.GetBody();
-    
-    ScopedBuffer raw_data(buffer_pool);
-    if (!raw_data.valid()) return;
-    raw_data->clear();
-    
-    char temp_buf[65536];
-    while (stream.read(temp_buf, sizeof(temp_buf))) {
-        raw_data->insert(raw_data->end(), temp_buf, temp_buf + stream.gcount());
-    }
-    if (stream.gcount() > 0) {
-        raw_data->insert(raw_data->end(), temp_buf, temp_buf + stream.gcount());
-    }
+        GetObjectRequest get_req;
+        get_req.WithBucket(item.bucket).WithKey(item.key);
 
-    if (raw_data->empty()) {
-        return;
-    }
-
-    ScopedBuffer decompressed_data(buffer_pool);
-    if (!decompressed_data.valid()) return;
-    decompressed_data->clear();
-
-    auto frames = parse_nexrad_level2_multi(*raw_data, item.station, item.timestamp, config.products, decompressed_data.get(), config.generate_3d);
-    
-    raw_data.reset();
-
-    for (auto& pair : frames) {
-        if (should_stop_.load()) break;
-        const std::string& product = pair.first;
-        auto& frame = pair.second;
-        if (should_stop_.load()) break;
-
-        try {
-            if (!frame || frame->available_tilts.empty()) continue;
-
-            std::vector<float> sorted_tilts = frame->available_tilts;
-            std::sort(sorted_tilts.begin(), sorted_tilts.end());
-
-            const uint16_t vol_num_rays = 720;
-            const float vol_res_factor = 2.0f;
-            const uint16_t vol_num_gates = frame->ngates;
-            const uint16_t vol_num_tilts = static_cast<uint16_t>(sorted_tilts.size());
+        auto get_outcome = s3_client->GetObject(get_req);
+        if (!get_outcome.IsSuccess()) {
+            this->log_error("Failed to get object " + item.key + ": " + get_outcome.GetError().GetMessage());
+            frames_failed_.fetch_add(1);
             
-            if (vol_num_gates == 0 || frame->gate_spacing_meters <= 0) continue;
-            
-            size_t total_elements = static_cast<size_t>(vol_num_tilts) * vol_num_rays * vol_num_gates;
-            if (total_elements > 200000000) {
-                continue;
+            {
+                std::lock_guard<std::mutex> lock(stats_mutex_);
+                station_stats_[item.station].frames_failed++;
+                station_stats_[item.station].last_fetch_timestamp = std::chrono::system_clock::now().time_since_epoch().count();
             }
+            continue;
+        }
 
-            ScopedBuffer vol_grid_buf(buffer_pool);
-            if (!vol_grid_buf.valid()) continue;
-            vol_grid_buf->assign(total_elements, 0);
-            std::vector<uint8_t>& vol_grid = *vol_grid_buf;
-            
-            auto params = get_quant_params(product);
+        auto result = get_outcome.GetResultWithOwnership();
+        auto& stream = result.GetBody();
+        
+        ScopedBuffer raw_data(buffer_pool);
+        if (!raw_data.valid()) continue;
+        raw_data->clear();
+        
+        char temp_buf[65536];
+        while (!is_stopped()) {
+            stream.read(temp_buf, sizeof(temp_buf));
+            std::streamsize bytes_read = stream.gcount();
+            if (bytes_read > 0) {
+                raw_data->insert(raw_data->end(), temp_buf, temp_buf + bytes_read);
+            }
+            if (!stream) break;
+        }
 
-            for (size_t tilt_idx = 0; tilt_idx < sorted_tilts.size(); ++tilt_idx) {
-                if (should_stop_.load()) break;
-                float tilt = sorted_tilts[tilt_idx];
+        if (is_stopped()) break;
+        if (raw_data->empty()) {
+            continue;
+        }
 
-                bool has_sweeps = false;
-                for (const auto& sweep : frame->sweeps) {
-                    if (std::abs(sweep.elevation_deg - tilt) < 0.01f) {
-                        has_sweeps = true;
-                        break;
+        ScopedBuffer decompressed_data(buffer_pool);
+        if (!decompressed_data.valid()) continue;
+        decompressed_data->clear();
+
+        auto frames = parse_nexrad_level2_multi(*raw_data, item.station, item.timestamp, config.products, decompressed_data.get(), config.generate_3d);
+        
+        // Release buffers early to avoid deadlocks when processing many products
+        raw_data.reset();
+        decompressed_data.reset();
+
+        for (auto& pair : frames) {
+            if (is_stopped()) break;
+            const std::string& product = pair.first;
+            auto& frame = pair.second;
+            if (is_stopped()) break;
+
+                try {
+                    if (!frame || frame->available_tilts.empty()) continue;
+
+                    std::vector<float> sorted_tilts = frame->available_tilts;
+                    std::sort(sorted_tilts.begin(), sorted_tilts.end());
+
+                    const uint16_t vol_num_rays = 720;
+                    const float vol_res_factor = 2.0f;
+                    const uint16_t vol_num_gates = frame->ngates;
+                    const uint16_t vol_num_tilts = static_cast<uint16_t>(sorted_tilts.size());
+                    
+                    if (vol_num_gates == 0 || frame->gate_spacing_meters <= 0) continue;
+                    
+                    // Safety: limit allocation size
+                    size_t total_elements = static_cast<size_t>(vol_num_tilts) * vol_num_rays * vol_num_gates;
+                    if (total_elements > 200000000) { // 200M elements (~200MB)
+                        continue;
                     }
-                }
-                if (!has_sweeps) continue;
 
-                uint16_t num_rays = 360;
-                float resolution_factor = 1.0f;
-                if (frame->elevation_ray_counts) {
-                    auto ray_count_it = frame->elevation_ray_counts->find(RadarFrame::get_tilt_key(tilt));
-                    if (ray_count_it != frame->elevation_ray_counts->end() && ray_count_it->second > 400) {
-                        num_rays = 720;
-                        resolution_factor = 2.0f;
-                    }
-                }
-                
-                ScopedBuffer grid_2d_buf(buffer_pool);
-                if (!grid_2d_buf.valid()) continue;
-                grid_2d_buf->assign(static_cast<size_t>(num_rays) * vol_num_gates, 0);
-                std::vector<uint8_t>& grid_2d = *grid_2d_buf;
-                
-                for (const auto& sweep : frame->sweeps) {
-                    if (should_stop_.load()) break;
-                    if (std::abs(sweep.elevation_deg - tilt) < 0.01f) {
-                        const auto& bins = sweep.bins;
-                        size_t bin_count = bins.size();
-                        
-                        for (size_t j = 0; j + 2 < bin_count; j += 3) {
-                            float azimuth = bins[j];
-                            float range = bins[j+1];
-                            float value = bins[j+2];
+                    // Pool processing buffers
+                    ScopedBuffer vol_grid_buf(buffer_pool);
+                    if (!vol_grid_buf.valid()) continue;
+                    vol_grid_buf->assign(total_elements, 0);
+                    std::vector<uint8_t>& vol_grid = *vol_grid_buf;
+                    
+                    auto params = get_quant_params(product);
 
-                            uint8_t val = quantize_value(value, params.value_min, params.value_max);
-                            if (val == 0) continue;
+                    for (size_t tilt_idx = 0; tilt_idx < sorted_tilts.size(); ++tilt_idx) {
+                        if (is_stopped()) break;
+                        float tilt = sorted_tilts[tilt_idx];
+                        if (is_stopped()) break;
 
-                            int gate_idx = static_cast<int>(std::floor((range - frame->first_gate_meters) / frame->gate_spacing_meters));
-                            if (gate_idx < 0 || gate_idx >= static_cast<int>(vol_num_gates)) continue;
-
-                            int ray_idx_2d = static_cast<int>(std::floor(azimuth * resolution_factor + 0.01f)) % num_rays;
-                            if (ray_idx_2d < 0) ray_idx_2d += num_rays;
-                            size_t idx_2d = static_cast<size_t>(ray_idx_2d) * vol_num_gates + gate_idx;
-                            if (idx_2d < grid_2d.size()) {
-                                grid_2d[idx_2d] = std::max(grid_2d[idx_2d], val);
+                        // Check if this tilt has any sweeps before proceeding
+                        bool has_sweeps = false;
+                        for (const auto& sweep : frame->sweeps) {
+                            if (is_stopped()) break;
+                            if (std::abs(sweep.elevation_deg - tilt) < 0.01f) {
+                                has_sweeps = true;
+                                break;
                             }
+                        }
+                        if (is_stopped()) break;
+                        if (!has_sweeps) continue;
 
-                            int ray_idx_3d = static_cast<int>(std::floor(azimuth * vol_res_factor + 0.01f)) % vol_num_rays;
-                            if (ray_idx_3d < 0) ray_idx_3d += vol_num_rays;
-                            size_t idx_3d = (static_cast<size_t>(tilt_idx) * vol_num_rays * vol_num_gates) + 
-                                            (static_cast<size_t>(ray_idx_3d) * vol_num_gates) + gate_idx;
-                            if (idx_3d < vol_grid.size()) {
-                                vol_grid[idx_3d] = std::max(vol_grid[idx_3d], val);
-                                if (resolution_factor < 1.5f) {
-                                    int adjacent_ray = (ray_idx_3d + 1) % vol_num_rays;
-                                    size_t adj_idx = (static_cast<size_t>(tilt_idx) * vol_num_rays * vol_num_gates) + 
-                                                     (static_cast<size_t>(adjacent_ray) * vol_num_gates) + gate_idx;
-                                    if (adj_idx < vol_grid.size()) vol_grid[adj_idx] = std::max(vol_grid[adj_idx], val);
+                        uint16_t num_rays = 360;
+                        float resolution_factor = 1.0f;
+                        if (frame->elevation_ray_counts) {
+                            auto ray_count_it = frame->elevation_ray_counts->find(RadarFrame::get_tilt_key(tilt));
+                            if (ray_count_it != frame->elevation_ray_counts->end() && ray_count_it->second > 400) {
+                                num_rays = 720;
+                                resolution_factor = 2.0f;
+                            }
+                        }
+                        
+                        ScopedBuffer grid_2d_buf(buffer_pool);
+                        if (!grid_2d_buf.valid()) continue;
+                        grid_2d_buf->assign(static_cast<size_t>(num_rays) * vol_num_gates, 0);
+                        std::vector<uint8_t>& grid_2d = *grid_2d_buf;
+                        
+                        for (const auto& sweep : frame->sweeps) {
+                            if (is_stopped()) break;
+                            if (std::abs(sweep.elevation_deg - tilt) < 0.01f) {
+                                for (size_t j = 0; j + 2 < sweep.bins.size(); j += 3) {
+                                    if (is_stopped()) break;
+                                    float azimuth = sweep.bins[j];
+                                    float range = sweep.bins[j+1];
+                                    float value = sweep.bins[j+2];
+
+                                    uint8_t val = quantize_value(value, params.value_min, params.value_max);
+                                    if (val == 0) continue;
+
+                                    int gate_idx = static_cast<int>(std::floor((range - frame->first_gate_meters) / frame->gate_spacing_meters));
+                                    if (gate_idx < 0 || gate_idx >= static_cast<int>(vol_num_gates)) continue;
+
+                                    int ray_idx_2d = static_cast<int>(std::floor(azimuth * resolution_factor + 0.01f)) % num_rays;
+                                    if (ray_idx_2d < 0) ray_idx_2d += num_rays;
+                                    size_t idx_2d = static_cast<size_t>(ray_idx_2d) * vol_num_gates + gate_idx;
+                                    if (idx_2d < grid_2d.size()) {
+                                        grid_2d[idx_2d] = std::max(grid_2d[idx_2d], val);
+                                    }
+
+                                    int ray_idx_3d = static_cast<int>(std::floor(azimuth * vol_res_factor + 0.01f)) % vol_num_rays;
+                                    if (ray_idx_3d < 0) ray_idx_3d += vol_num_rays;
+                                    size_t idx_3d = (static_cast<size_t>(tilt_idx) * vol_num_rays * vol_num_gates) + 
+                                                    (static_cast<size_t>(ray_idx_3d) * vol_num_gates) + gate_idx;
+                                    if (idx_3d < vol_grid.size()) {
+                                        vol_grid[idx_3d] = std::max(vol_grid[idx_3d], val);
+                                        if (resolution_factor < 1.5f) {
+                                            int adjacent_ray = (ray_idx_3d + 1) % vol_num_rays;
+                                            size_t adj_idx = (static_cast<size_t>(tilt_idx) * vol_num_rays * vol_num_gates) + 
+                                                             (static_cast<size_t>(adjacent_ray) * vol_num_gates) + gate_idx;
+                                            if (adj_idx < vol_grid.size()) vol_grid[adj_idx] = std::max(vol_grid[adj_idx], val);
+                                        }
+                                    }
                                 }
                             }
                         }
+
+                        if (is_stopped()) break;
+
+                        ScopedBuffer bitmask_2d_buf(buffer_pool);
+                        ScopedBuffer values_2d_buf(buffer_pool);
+                        if (!bitmask_2d_buf.valid() || !values_2d_buf.valid()) continue;
+                        
+                        bitmask_2d_buf->assign((grid_2d.size() + 7) / 8, 0);
+                        values_2d_buf->clear();
+                        
+                        std::vector<uint8_t>& bitmask_2d = *bitmask_2d_buf;
+                        std::vector<uint8_t>& values_2d = *values_2d_buf;
+
+                        for (size_t b = 0; b < grid_2d.size(); ++b) {
+                            if (grid_2d[b] > 0) {
+                                bitmask_2d[b / 8] |= (1 << (7 - (b % 8)));
+                                values_2d.push_back(grid_2d[b]);
+                            }
+                        }
+
+                        if (is_stopped()) break;
+
+                        if (storage_->save_frame_bitmask(item.station, product, item.timestamp, tilt, num_rays, vol_num_gates, frame->gate_spacing_meters, frame->first_gate_meters, bitmask_2d, values_2d, frame->dualpol_meta, false)) {
+                            frames_fetched_.fetch_add(1);
+                            {
+                                std::lock_guard<std::mutex> lock(stats_mutex_);
+                                station_stats_[item.station].frames_fetched++;
+                                station_stats_[item.station].last_fetch_timestamp = std::chrono::system_clock::now().time_since_epoch().count();
+                                station_stats_[item.station].last_frame_timestamp = item.timestamp;
+                            }
+                        }
                     }
-                }
 
-                if (should_stop_.load()) break;
+                    if (is_stopped()) continue;
 
-                ScopedBuffer bitmask_2d_buf(buffer_pool);
-                ScopedBuffer values_2d_buf(buffer_pool);
-                if (!bitmask_2d_buf.valid() || !values_2d_buf.valid()) continue;
-                
-                bitmask_2d_buf->assign((grid_2d.size() + 7) / 8, 0);
-                values_2d_buf->clear();
-                
-                std::vector<uint8_t>& bitmask_2d = *bitmask_2d_buf;
-                std::vector<uint8_t>& values_2d = *values_2d_buf;
+                    ScopedBuffer vol_bitmask_buf(buffer_pool);
+                    ScopedBuffer vol_values_buf(buffer_pool);
+                    if (vol_bitmask_buf.valid() && vol_values_buf.valid()) {
+                        vol_bitmask_buf->assign((vol_grid.size() + 7) / 8, 0);
+                        vol_values_buf->clear();
+                        
+                        std::vector<uint8_t>& vol_bitmask = *vol_bitmask_buf;
+                        std::vector<uint8_t>& vol_values = *vol_values_buf;
+                        
+                        for (size_t b = 0; b < vol_grid.size(); ++b) {
+                            if ((b & 0xFFFF) == 0 && is_stopped()) break;
+                            if (vol_grid[b] > 0) {
+                                vol_bitmask[b / 8] |= (1 << (7 - (b % 8)));
+                                vol_values.push_back(vol_grid[b]);
+                            }
+                        }
 
-                for (size_t b = 0; b < grid_2d.size(); ++b) {
-                    if (grid_2d[b] > 0) {
-                        bitmask_2d[b / 8] |= (1 << (7 - (b % 8)));
-                        values_2d.push_back(grid_2d[b]);
+                        if (!vol_values.empty() && !is_stopped()) {
+                            storage_->save_volumetric_bitmask(item.station, product, item.timestamp, sorted_tilts, vol_num_rays, vol_num_gates, frame->gate_spacing_meters, frame->first_gate_meters, vol_bitmask, vol_values, frame->dualpol_meta, false);
+                        }
                     }
+                    
+                    // CRITICAL: Reclaim memory from RadarFrame as soon as it's processed and saved
+                    frame->clear_data();
+                    
+                } catch (const std::exception& e) {
+                    this->log_error("Exception parsing/processing " + product + " for " + item.station + ": " + e.what());
+                } catch (...) {
+                    this->log_error("Unknown exception parsing/processing " + product + " for " + item.station);
                 }
-
-                if (should_stop_.load()) break;
-
-                if (storage_->save_frame_bitmask(item.station, product, item.timestamp, tilt, num_rays, vol_num_gates, frame->gate_spacing_meters, frame->first_gate_meters, bitmask_2d, values_2d, frame->dualpol_meta, false)) {
-                    frames_fetched_.fetch_add(1);
-                    {
-                        std::lock_guard<std::mutex> lock(stats_mutex_);
-                        station_stats_[item.station].frames_fetched++;
-                        station_stats_[item.station].last_fetch_timestamp = std::chrono::system_clock::now().time_since_epoch().count();
-                        station_stats_[item.station].last_frame_timestamp = item.timestamp;
-                    }
-                }
-            }
-
-            if (should_stop_.load()) continue;
-
-            ScopedBuffer vol_bitmask_buf(buffer_pool);
-            ScopedBuffer vol_values_buf(buffer_pool);
-            if (vol_bitmask_buf.valid() && vol_values_buf.valid()) {
-                vol_bitmask_buf->assign((vol_grid.size() + 7) / 8, 0);
-                vol_values_buf->clear();
-                
-                std::vector<uint8_t>& vol_bitmask = *vol_bitmask_buf;
-                std::vector<uint8_t>& vol_values = *vol_values_buf;
-                
-                for (size_t b = 0; b < vol_grid.size(); ++b) {
-                    if ((b & 0xFFFF) == 0 && should_stop_.load()) break;
-                    if (vol_grid[b] > 0) {
-                        vol_bitmask[b / 8] |= (1 << (7 - (b % 8)));
-                        vol_values.push_back(vol_grid[b]);
-                    }
-                }
-
-                if (!vol_values.empty() && !should_stop_.load()) {
-                    storage_->save_volumetric_bitmask(item.station, product, item.timestamp, sorted_tilts, vol_num_rays, vol_num_gates, frame->gate_spacing_meters, frame->first_gate_meters, vol_bitmask, vol_values, frame->dualpol_meta, false);
-                }
-            }
-            
-            frame->clear_data();
-            
-        } catch (const std::exception& e) {
-            this->log_error("Exception parsing/processing " + product + " for " + item.station + ": " + e.what());
-        } catch (...) {
-            this->log_error("Unknown exception parsing/processing " + product + " for " + item.station);
         }
-    }
-    
-    last_fetch_timestamp_.store(std::chrono::system_clock::now().time_since_epoch().count());
-}
-
-void BackgroundFrameFetcher::process_discovery_batch(const DiscoveryBatch& batch, const FrameFetcherConfig& config, std::shared_ptr<BufferPool> buffer_pool) {
-    for (const auto& item : batch.items) {
-        if (should_stop_.load()) break;
-        process_single_frame(item, config, buffer_pool);
+        last_fetch_timestamp_.store(std::chrono::system_clock::now().time_since_epoch().count());
     }
 
+    // Update index once per batch after ALL items and ALL products are saved
     for (const auto& product : config.products) {
         storage_->update_index(batch.station, product);
     }
@@ -676,9 +729,9 @@ void BackgroundFrameFetcher::process_discovery_batch(const DiscoveryBatch& batch
 void BackgroundFrameFetcher::fetch_frame_for_station(const std::string& station) {
     using namespace Aws::S3::Model;
     
+    // Tracking active scans for 150+ stations efficiency
     ScanGuard guard(station, active_scans_, active_scans_mutex_);
     this->log_info("Starting discovery scan for station: " + station);
-    auto scan_start = std::chrono::high_resolution_clock::now();
 
     auto s3_client = AWSInitializer::instance().get_s3_client();
     if (!s3_client) return;
@@ -726,6 +779,7 @@ void BackgroundFrameFetcher::fetch_frame_for_station(const std::string& station)
 
         if (objects.empty()) return;
 
+        // Sort by key (which is chronological for NEXRAD)
         std::sort(objects.begin(), objects.end(), [](const auto& a, const auto& b) {
             return a.GetKey() < b.GetKey();
         });
@@ -741,14 +795,17 @@ void BackgroundFrameFetcher::fetch_frame_for_station(const std::string& station)
         std::vector<Aws::S3::Model::Object> target_objects;
         if (last_key.empty()) {
             if (catchup) {
+                // Take up to max_frames of the LATEST objects if we're catching up
                 size_t count = std::min(objects.size(), static_cast<size_t>(max_frames));
                 for (size_t i = objects.size() - count; i < objects.size(); ++i) {
                     target_objects.push_back(objects[i]);
                 }
             } else {
+                // Only take the absolute latest one if no catchup
                 target_objects.push_back(objects.back());
             }
         } else {
+            // Processing all new items found since last_key
             target_objects = objects;
         }
 
@@ -766,6 +823,7 @@ void BackgroundFrameFetcher::fetch_frame_for_station(const std::string& station)
             
             std::string timestamp = filename.substr(4, 8) + "_" + filename.substr(filename.find('_') + 1, 6);
 
+            // Skip if already stored
             bool all_exist = true;
             FrameFetcherConfig current_config;
             {
@@ -787,6 +845,7 @@ void BackgroundFrameFetcher::fetch_frame_for_station(const std::string& station)
                 item.timestamp = timestamp;
                 batch.items.push_back(item);
                 
+                // If batch gets too large, push it and start a new one to allow interleaving
                 if (batch.items.size() >= 5) {
                     {
                         std::unique_lock<std::mutex> lock(discovery_mutex_);
@@ -816,7 +875,6 @@ void BackgroundFrameFetcher::fetch_frame_for_station(const std::string& station)
                     });
                 }
                 if (!should_stop_.load()) {
-                    this->log_info("Pushing batch to discovery queue: " + batch.station + " with " + std::to_string(batch.items.size()) + " items, queue size: " + std::to_string(discovery_queue_.size() + 1));
                     discovery_queue_.push(std::move(batch));
                 }
             }
@@ -828,10 +886,6 @@ void BackgroundFrameFetcher::fetch_frame_for_station(const std::string& station)
             station_stats_[station].last_processed_key = new_last_key;
             station_stats_[station].last_scan_timestamp = std::chrono::system_clock::now().time_since_epoch().count();
         }
-        
-        auto scan_end = std::chrono::high_resolution_clock::now();
-        auto scan_duration = std::chrono::duration_cast<std::chrono::milliseconds>(scan_end - scan_start).count();
-        this->log_info("Discovery scan for " + station + " complete in " + std::to_string(scan_duration) + "ms");
     } catch (const std::exception& e) {
         this->log_error("Exception fetching " + station + ": " + e.what());
     }
@@ -894,6 +948,8 @@ json BackgroundFrameFetcher::get_statistics() const {
         std::lock_guard<std::mutex> lock(stats_mutex_);
         json s_stats = json::object();
         
+        // Optimization: limit the number of station stats returned to avoid massive JSON responses
+        // if hundreds of stations are monitored. Sort by last_fetch_timestamp (most recent first).
         std::vector<std::pair<std::string, StationStats>> sorted_stats(station_stats_.begin(), station_stats_.end());
         std::sort(sorted_stats.begin(), sorted_stats.end(), [](const auto& a, const auto& b) {
             return a.second.last_fetch_timestamp > b.second.last_fetch_timestamp;
@@ -901,7 +957,7 @@ json BackgroundFrameFetcher::get_statistics() const {
         
         size_t count = 0;
         for (const auto& [station, s] : sorted_stats) {
-            if (count++ >= 50) break;
+            if (count++ >= 50) break; // Limit to 50 most recent
             s_stats[station] = {
                 {"frames_fetched", s.frames_fetched},
                 {"frames_failed", s.frames_failed},

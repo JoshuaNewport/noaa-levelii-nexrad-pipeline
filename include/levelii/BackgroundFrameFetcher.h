@@ -61,13 +61,35 @@ struct StationStats {
     uint64_t last_scan_timestamp = 0;
 };
 
+/**
+ * BufferPool - Pre-allocated memory for high-throughput data processing
+ */
 class BufferPool {
 public:
     explicit BufferPool(size_t num_buffers, size_t buffer_size);
     std::vector<uint8_t>* acquire();
     void release(std::vector<uint8_t>* buffer);
+
+    /**
+     * @brief Shut down the buffer pool.
+     * 
+     * Wakes up all waiting threads. Subsequent calls to acquire() will return nullptr.
+     */
     void shutdown();
+
+    /**
+     * @brief Check if the buffer pool has been shut down.
+     */
     bool is_shutdown() const { return stop_; }
+
+    /**
+     * @brief Set whether logging is enabled for this buffer pool.
+     */
+    void set_logging_enabled(bool enabled) { logging_enabled_.store(enabled); }
+
+    /**
+     * @brief Get statistics for the buffer pool.
+     */
     size_t total_buffers() const { return buffers_.size(); }
     size_t available_buffers() const {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -79,11 +101,16 @@ private:
     size_t buffer_size_;
     std::vector<std::unique_ptr<std::vector<uint8_t>>> buffers_;
     std::queue<std::vector<uint8_t>*> available_;
+    std::set<std::vector<uint8_t>*> in_use_;
     mutable std::mutex mutex_;
     std::condition_variable cv_;
-    bool stop_{false};
+    std::atomic<bool> stop_{false};
+    std::atomic<bool> logging_enabled_{false};
 };
 
+/**
+ * ScopedBuffer - RAII wrapper for BufferPool
+ */
 class ScopedBuffer {
 public:
     explicit ScopedBuffer(std::shared_ptr<BufferPool> pool) 
@@ -97,9 +124,11 @@ public:
         release_buffer();
     }
     
+    // Non-copyable
     ScopedBuffer(const ScopedBuffer&) = delete;
     ScopedBuffer& operator=(const ScopedBuffer&) = delete;
     
+    // Movable
     ScopedBuffer(ScopedBuffer&& other) noexcept 
         : pool_(std::move(other.pool_)), buffer_(other.buffer_) {
         other.buffer_ = nullptr;
@@ -135,30 +164,29 @@ private:
 };
 
 struct FrameFetcherConfig {
-    std::set<std::string> monitored_stations;
+    std::set<std::string> monitored_stations;  // Stations to monitor
     std::vector<std::string> products = {
         "reflectivity",
         "velocity",
         "correlation_coefficient"
     };
 
-    int scan_interval_seconds = 30;
-    int max_frames_per_station = 30;
-    int cleanup_interval_seconds = 300;
+    int scan_interval_seconds = 30;       // How often to check S3
+    int max_frames_per_station = 30;      // Max local cache
+    int cleanup_interval_seconds = 300;   // Auto-cleanup interval
     bool auto_cleanup_enabled = true;
-    bool catchup_enabled = true;
-    bool generate_3d = false;
+    bool catchup_enabled = true;          // Whether to fetch historical frames on startup
+    bool generate_3d = false;             // Whether to generate 3D volumetric data (default false for memory efficiency)
 
-    int fetcher_thread_pool_size = 16;
-    int buffer_pool_size = 128;
-    size_t buffer_size = 64 * 1024 * 1024;
-    int max_task_queue_size = 2000;
+    // Memory and Performance Scaling
+    int fetcher_thread_pool_size = 8;      // Increase to 8 for 150 stations
+    int buffer_pool_size = 64;            // More buffers for parallelism
+    size_t buffer_size = 64 * 1024 * 1024; // 64MB per buffer (for decompressed data)
+    int max_task_queue_size = 1000;       // Bound task queue to prevent memory spikes
     
-    int discovery_parallelism = 20;
-    int max_discovery_queue_size = 500;
-    
-    int parallel_downloads = 8;
-    int pipeline_depth = 32;
+    // Discovery performance
+    int discovery_parallelism = 10;        // Scan 10 stations at once
+    int max_discovery_queue_size = 200;    // Bound discovery queue (number of station batches)
 };
 
 class BackgroundFrameFetcher {
@@ -171,18 +199,34 @@ public:
 
     ~BackgroundFrameFetcher();
 
+    // Lifecycle
     void start();
     void stop();
     bool is_running() const { return is_running_; }
 
+    // Configuration
     void add_monitored_station(const std::string& station);
     void remove_monitored_station(const std::string& station);
     void set_monitored_stations(const std::set<std::string>& stations);
     std::set<std::string> get_monitored_stations() const;
-    void set_logging_enabled(bool enabled) { logging_enabled_.store(enabled); }
+    void set_logging_enabled(bool enabled);
 
+    /**
+     * @brief Update the fetcher's configuration at runtime.
+     * 
+     * Safely re-initializes thread and buffer pools if configuration changes.
+     * Guaranteed to be thread-safe with respect to ongoing discovery and fetching.
+     * 
+     * @param new_config The new configuration.
+     */
     void reconfigure(const FrameFetcherConfig& new_config);
     FrameFetcherConfig get_config() const;
+
+    /**
+     * @brief Retrieve detailed system metrics and station statistics.
+     * 
+     * @return json JSON-formatted statistics.
+     */
     json get_statistics() const;
 
 private:
@@ -191,10 +235,16 @@ private:
     std::string data_path_;
     std::shared_ptr<ThreadPool> fetch_thread_pool_;
     std::shared_ptr<ThreadPool> discovery_thread_pool_;
-    std::shared_ptr<ThreadPool> parse_thread_pool_;
     std::shared_ptr<BufferPool> buffer_pool_;
 
+    // Discovery queue
     std::thread discovery_loop_thread_;
+    std::queue<DiscoveryBatch> discovery_queue_;
+    mutable std::mutex discovery_mutex_;
+    std::condition_variable discovery_cv_;
+    std::condition_variable discovery_full_cv_;
+
+    // Threads
     std::thread fetch_thread_;
     std::thread cleanup_thread_;
     std::atomic<bool> is_running_{false};
@@ -203,39 +253,37 @@ private:
 
     mutable std::mutex state_mutex_;
 
+    // Stats
     std::atomic<uint64_t> frames_fetched_{0};
     std::atomic<uint64_t> frames_failed_{0};
     std::atomic<uint64_t> last_fetch_timestamp_{0};
     
-    std::queue<DiscoveryBatch> discovery_queue_;
-    mutable std::mutex discovery_mutex_;
-    std::condition_variable discovery_cv_;
-    std::condition_variable discovery_full_cv_;
-    
-
-    
     std::map<std::string, StationStats> station_stats_;
     mutable std::mutex stats_mutex_;
 
+    // High-parallelism discovery tracking
     std::set<std::string> active_scans_;
     mutable std::mutex active_scans_mutex_;
 
+    // Loops
     void discovery_loop();
     void fetch_loop();
-    void process_loop();
     void cleanup_loop();
 
+    // Pool Management
     void reinitialize_pools();
 
+    // Configuration persistence
     void load_config_from_disk();
     void save_config_to_disk() const;
     void load_state_from_disk();
     void save_state_to_disk() const;
 
+    // ✅ Core NOAA S3 logic
     void fetch_frame_for_station(const std::string& station);
     void process_discovery_batch(const DiscoveryBatch& batch, const FrameFetcherConfig& config, std::shared_ptr<BufferPool> buffer_pool);
-    void process_single_frame(const DiscoveryItem& item, const FrameFetcherConfig& config, std::shared_ptr<BufferPool> buffer_pool);
 
+    // Logging helpers
     void log_info(const std::string& msg) const;
     void log_error(const std::string& msg) const;
 };
