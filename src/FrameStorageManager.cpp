@@ -154,7 +154,7 @@ std::string FrameStorageManager::format_filename(const std::string& timestamp, f
 
 std::string FrameStorageManager::get_frame_path(const std::string& station, const std::string& product, const std::string& timestamp, float tilt) const {
     std::ostringstream oss;
-    oss << base_path_ << "/" << station << "/" << timestamp << "/" << product << "/" << format_filename(timestamp, tilt);
+    oss << base_path_ << "/" << station << "/" << product << "/" << timestamp << "/" << format_filename(timestamp, tilt);
     return oss.str();
 }
 
@@ -165,7 +165,7 @@ std::string FrameStorageManager::get_index_path(const std::string& station, cons
 }
 
 bool FrameStorageManager::save_frame_bitmask(const std::string& station, const std::string& product, const std::string& timestamp, float tilt, uint16_t num_rays, uint16_t num_gates, float gate_spacing, float first_gate, const std::vector<uint8_t>& bitmask, const std::vector<uint8_t>& values, const RadarFrame::DualPolMetadata& dualpol_meta, bool auto_update_index) {
-    std::string dir = base_path_ + "/" + station + "/" + timestamp + "/" + product;
+    std::string dir = base_path_ + "/" + station + "/" + product + "/" + timestamp;
     if (!ensure_directory_exists(dir)) return false;
     
     json metadata = {
@@ -223,7 +223,7 @@ bool FrameStorageManager::save_frame_bitmask(const std::string& station, const s
 bool FrameStorageManager::load_frame_bitmask(const std::string& station, const std::string& product, const std::string& timestamp, float tilt, CompressedFrameData& out_data) const {
     std::ostringstream oss;
     oss << std::fixed << std::setprecision(1) << tilt << ".RDA";
-    std::string file_path = base_path_ + "/" + station + "/" + timestamp + "/" + product + "/" + oss.str();
+    std::string file_path = base_path_ + "/" + station + "/" + product + "/" + timestamp + "/" + oss.str();
     
     if (!fs::exists(file_path)) return false;
     
@@ -258,7 +258,7 @@ bool FrameStorageManager::load_frame_bitmask(const std::string& station, const s
 }
 
 bool FrameStorageManager::load_volumetric_bitmask(const std::string& station, const std::string& product, const std::string& timestamp, CompressedFrameData& out_data) const {
-    std::string file_path = base_path_ + "/" + station + "/" + timestamp + "/" + product + "/volumetric.RDA";
+    std::string file_path = base_path_ + "/" + station + "/" + product + "/" + timestamp + "/volumetric.RDA";
     
     if (!fs::exists(file_path)) return false;
     
@@ -293,7 +293,7 @@ bool FrameStorageManager::load_volumetric_bitmask(const std::string& station, co
 }
 
 bool FrameStorageManager::save_volumetric_bitmask(const std::string& station, const std::string& product, const std::string& timestamp, const std::vector<float>& tilts, uint16_t num_rays, uint16_t num_gates, float gate_spacing, float first_gate, const std::vector<uint8_t>& bitmask, const std::vector<uint8_t>& values, const RadarFrame::DualPolMetadata& dualpol_meta, bool auto_update_index) {
-    std::string dir = base_path_ + "/" + station + "/" + timestamp + "/" + product;
+    std::string dir = base_path_ + "/" + station + "/" + product + "/" + timestamp;
     if (!ensure_directory_exists(dir)) return false;
     
     json metadata = {
@@ -487,9 +487,9 @@ std::vector<FrameStorageManager::FrameMetadata> FrameStorageManager::scan_direct
             if (!entry.is_regular_file(ec)) continue;
             if (entry.path().extension() != ".RDA") continue;
             
-            // Path is base_path/station/timestamp/product/tilt.RDA
+            // Path is base_path/station/product/timestamp/tilt.RDA
             // We only want files for the requested product
-            if (entry.path().parent_path().filename().string() != product) continue;
+            if (entry.path().parent_path().parent_path().filename().string() != product) continue;
 
             FrameMetadata meta;
             meta.station = station;
@@ -498,7 +498,7 @@ std::vector<FrameStorageManager::FrameMetadata> FrameStorageManager::scan_direct
             meta.file_size = entry.file_size(ec);
             if (ec) continue;
             
-            meta.timestamp = entry.path().parent_path().parent_path().filename().string();
+            meta.timestamp = entry.path().parent_path().filename().string();
             try {
                 meta.tilt = std::stof(entry.path().stem().string());
             } catch (...) { meta.tilt = 0.0f; }
@@ -525,10 +525,10 @@ void FrameStorageManager::cleanup_old_frames(int max_frames_per_station) {
         if (!station_entry.is_directory()) continue;
         
         std::unordered_map<std::string, std::vector<std::string>> products;
-        for (const auto& ts_entry : fs::directory_iterator(station_entry)) {
-            if (!ts_entry.is_directory()) continue;
-            for (const auto& prod_entry : fs::directory_iterator(ts_entry)) {
-                if (prod_entry.is_directory()) products[prod_entry.path().filename().string()].push_back(ts_entry.path().filename().string());
+        for (const auto& prod_entry : fs::directory_iterator(station_entry)) {
+            if (!prod_entry.is_directory()) continue;
+            for (const auto& ts_entry : fs::directory_iterator(prod_entry)) {
+                if (ts_entry.is_directory()) products[prod_entry.path().filename().string()].push_back(ts_entry.path().filename().string());
             }
         }
         
@@ -536,7 +536,7 @@ void FrameStorageManager::cleanup_old_frames(int max_frames_per_station) {
             std::sort(timestamps.rbegin(), timestamps.rend());
             if (timestamps.size() > static_cast<size_t>(max_frames_per_station)) {
                 for (size_t i = max_frames_per_station; i < timestamps.size(); ++i) {
-                    std::string prod_dir = station_entry.path().string() + "/" + timestamps[i] + "/" + prod;
+                    std::string prod_dir = station_entry.path().string() + "/" + prod + "/" + timestamps[i];
                     if (fs::exists(prod_dir)) {
                         size_t removed_usage = 0;
                         int removed_count = 0;
@@ -555,10 +555,10 @@ void FrameStorageManager::cleanup_old_frames(int max_frames_per_station) {
                             total_frame_count_ -= removed_count;
                         }
                         
-                        // Cleanup empty parent timestamp directory
-                        fs::path ts_dir = fs::path(prod_dir).parent_path();
-                        if (fs::exists(ts_dir) && fs::is_directory(ts_dir) && fs::is_empty(ts_dir)) {
-                            fs::remove(ts_dir);
+                        // Cleanup empty parent product directory
+                        fs::path prod_dir = fs::path(prod_dir).parent_path();
+                        if (fs::exists(prod_dir) && fs::is_directory(prod_dir) && fs::is_empty(prod_dir)) {
+                            fs::remove(prod_dir);
                         }
                     }
                 }
@@ -589,7 +589,7 @@ void FrameStorageManager::cleanup_old_frames(int max_frames_per_station) {
 }
 
 bool FrameStorageManager::has_timestamp_product(const std::string& station, const std::string& product, const std::string& timestamp) const {
-    std::string path = base_path_ + "/" + station + "/" + timestamp + "/" + product;
+    std::string path = base_path_ + "/" + station + "/" + product + "/" + timestamp;
     return fs::exists(path) && fs::is_directory(path);
 }
 
