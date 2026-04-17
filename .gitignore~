@@ -17,3 +17,4 @@ data/
 
 # Logs
 *.log
+test_data/
