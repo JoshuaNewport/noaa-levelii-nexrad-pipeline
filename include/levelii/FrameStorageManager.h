@@ -26,6 +26,8 @@
 #include <atomic>
 #include <condition_variable>
 #include "levelii/RadarFrame.h"
+#include "levelii/DatabaseUtils.h"
+#include <memory>
 
 using json = nlohmann::json;
 namespace fs = std::filesystem;
@@ -193,11 +195,6 @@ public:
         float tilt
     ) const;
     
-    std::string get_index_path(
-        const std::string& station,
-        const std::string& product
-    ) const;
-    
     // Statistics
     size_t get_total_disk_usage() const;
     int get_frame_count() const;
@@ -206,17 +203,9 @@ public:
         return write_queue_.size();
     }
     
-    size_t index_cache_size() const {
-        std::shared_lock<std::shared_mutex> lock(index_mutex_);
-        return index_cache_.size();
-    }
-
 private:
     std::string base_path_;
-    mutable std::shared_mutex index_mutex_;
-    mutable std::unordered_map<std::string, json> index_cache_;
-    mutable std::list<std::string> index_lru_list_;
-    mutable std::unordered_map<std::string, std::list<std::string>::iterator> index_lru_map_;
+    std::unique_ptr<levelii::SQLiteDatabase> db_;
 
     // Incremental statistics tracking
     mutable std::mutex stats_mutex_;
@@ -241,9 +230,5 @@ private:
     std::string format_filename(
         const std::string& timestamp,
         float tilt
-    ) const;
-    std::vector<FrameMetadata> scan_directory(
-        const std::string& station,
-        const std::string& product
     ) const;
 };

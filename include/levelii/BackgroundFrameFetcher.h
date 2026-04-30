@@ -176,7 +176,9 @@ struct FrameFetcherConfig {
     int cleanup_interval_seconds = 300;   // Auto-cleanup interval
     bool auto_cleanup_enabled = true;
     bool catchup_enabled = true;          // Whether to fetch historical frames on startup
-    bool generate_3d = false;             // Whether to generate 3D volumetric data (default false for memory efficiency)
+    bool generate_3d = true;              // Whether to generate 3D volumetric data (always on)
+    bool save_individual_tilts = true;    // Whether to save individual tilt files
+    bool save_volumetric = true;          // Whether to save volumetric files (if generate_3d is true)
 
     // Memory and Performance Scaling
     int fetcher_thread_pool_size = 8;      // Increase to 8 for 150 stations

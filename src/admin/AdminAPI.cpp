@@ -147,7 +147,6 @@ json AdminAPI::handle_get_metrics() {
         metrics["disk_usage_mb"] = disk_usage / (1024 * 1024);
         metrics["disk_usage_gb"] = (double)disk_usage / (1024 * 1024 * 1024);
         metrics["frame_count"] = storage_->get_frame_count();
-        metrics["index_cache_size"] = storage_->index_cache_size();
         metrics["storage_pending_tasks"] = storage_->num_pending_tasks();
     } else {
         metrics["disk_usage_mb"] = 0;

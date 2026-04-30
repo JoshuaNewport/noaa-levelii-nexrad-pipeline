@@ -16,6 +16,8 @@ The service looks for configuration in the following order:
 ### Command-Line Arguments (`nexrad_pipeline`)
 - `--no-http`: Disables the Admin API server on port 13480.
 - `--catchup`: Enables the catch-up process of fetching historical frames on startup.
+- `--no-individual-tilts`: Disable saving individual tilt files (useful if only volumetric data is needed).
+- `--no-volumetric`: Disable saving volumetric files.
 - `--threads <N>`: Set number of worker threads (Base default: 4).
 - `--buffer-count <N>`: Set number of pre-allocated buffers (Base default: 10).
 - `--buffer-size <N>`: Set size of each buffer in MB (Base default: 10).

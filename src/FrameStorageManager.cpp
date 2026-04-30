@@ -29,6 +29,10 @@ FrameStorageManager::FrameStorageManager(const std::string& base_path)
     : base_path_(base_path) {
     ensure_directory_exists(base_path_);
     
+    // Initialize SQLite database
+    std::string db_path = base_path_ + "/index.db";
+    db_ = std::make_unique<levelii::SQLiteDatabase>(db_path);
+
     // Initial scan to populate statistics
     size_t usage = 0;
     int count = 0;
@@ -158,12 +162,6 @@ std::string FrameStorageManager::get_frame_path(const std::string& station, cons
     return oss.str();
 }
 
-std::string FrameStorageManager::get_index_path(const std::string& station, const std::string& product) const {
-    std::ostringstream oss;
-    oss << base_path_ << "/" << station << "/index_" << product << ".json";
-    return oss.str();
-}
-
 bool FrameStorageManager::save_frame_bitmask(const std::string& station, const std::string& product, const std::string& timestamp, float tilt, uint16_t num_rays, uint16_t num_gates, float gate_spacing, float first_gate, const std::vector<uint8_t>& bitmask, const std::vector<uint8_t>& values, const RadarFrame::DualPolMetadata& dualpol_meta, bool auto_update_index) {
     std::string dir = base_path_ + "/" + station + "/" + product + "/" + timestamp;
     if (!ensure_directory_exists(dir)) return false;
@@ -215,7 +213,7 @@ bool FrameStorageManager::save_frame_bitmask(const std::string& station, const s
     }
     
     if (auto_update_index) {
-        update_index(station, product);
+        db_->insert_frame("levelii_frames", station, 0, product, timestamp, oss.str());
     }
     return true;
 }
@@ -341,181 +339,93 @@ bool FrameStorageManager::save_volumetric_bitmask(const std::string& station, co
     }
     
     if (auto_update_index) {
-        update_index(station, product);
+        db_->insert_frame("levelii_frames", station, 0, product, timestamp, "volumetric.RDA");
     }
     return true;
 }
 
 void FrameStorageManager::update_index(const std::string& station, const std::string& product) {
-    try {
-        // 1. Scan and prepare index data outside the global lock
-        auto frames = scan_directory(station, product);
-        
-        json index = {
-            {"s", station}, {"p", product}, 
-            {"u", std::chrono::system_clock::now().time_since_epoch().count()},
-            {"c", frames.size()}, {"f", json::array()}
-        };
-        
-        for (const auto& frame : frames) {
-            index["f"].push_back({{"t", frame.timestamp}, {"e", frame.tilt}});
-        }
-        
-        std::string json_str = index.dump();
-        auto compressed = ZlibUtils::gzip_compress(reinterpret_cast<const uint8_t*>(json_str.c_str()), json_str.size());
-        
-        // 2. Update the cache and LRU list with the global lock
-        std::string key = station + "/" + product;
-        {
-            std::unique_lock<std::shared_mutex> lock(index_mutex_);
-            index_cache_[key] = index;
-            
-            // Safe LRU update
-            auto it = index_lru_map_.find(key);
-            if (it != index_lru_map_.end()) {
-                index_lru_list_.erase(it->second);
-            }
-            index_lru_list_.push_front(key);
-            index_lru_map_[key] = index_lru_list_.begin();
-            
-            // Prune cache if needed
-            if (index_cache_.size() > MAX_INDEX_CACHE_SIZE) {
-                std::string oldest_key = index_lru_list_.back();
-                index_cache_.erase(oldest_key);
-                index_lru_map_.erase(oldest_key);
-                index_lru_list_.pop_back();
+    // Scan directory and update SQLite for any missing entries
+    std::string product_dir = base_path_ + "/" + station + "/" + product;
+    if (!fs::exists(product_dir)) return;
+
+    for (const auto& ts_entry : fs::directory_iterator(product_dir)) {
+        if (!ts_entry.is_directory()) continue;
+        std::string timestamp = ts_entry.path().filename().string();
+        for (const auto& file_entry : fs::directory_iterator(ts_entry)) {
+            if (file_entry.is_regular_file() && file_entry.path().extension() == ".RDA") {
+                db_->insert_frame("levelii_frames", station, 0, product, timestamp, file_entry.path().filename().string());
             }
         }
-        
-        // 3. Persist to disk outside the lock using atomic rename
-        std::string index_path = get_index_path(station, product);
-        std::string tmp_path = index_path + ".tmp";
-        ensure_directory_exists(fs::path(index_path).parent_path().string());
-        
-        std::ofstream file(tmp_path, std::ios::binary | std::ios::trunc);
-        if (file.is_open()) {
-            file.write(reinterpret_cast<const char*>(compressed.data()), compressed.size());
-            file.close();
-            
-            std::error_code ec;
-            fs::rename(tmp_path, index_path, ec);
-            if (ec) {
-                log_error("Failed to rename index file: " + ec.message());
-                fs::remove(tmp_path, ec);
-            }
-        }
-    } catch (const std::exception& e) {
-        log_error("Exception in update_index: " + std::string(e.what()));
-    } catch (...) {
-        log_error("Unknown exception in update_index");
     }
 }
 
 json FrameStorageManager::get_index(const std::string& station, const std::string& product) const {
-    std::string key = station + "/" + product;
+    std::string sql = "SELECT timestamp as t, filename as f FROM levelii_frames "
+                      "WHERE station = '" + station + "' AND product_name = '" + product + "' "
+                      "ORDER BY timestamp DESC;";
     
-    // 1. Try to get from cache with shared lock (no LRU update for hits to keep it fast)
-    {
-        std::shared_lock<std::shared_mutex> lock(index_mutex_);
-        auto it = index_cache_.find(key);
-        if (it != index_cache_.end()) {
-            return it->second;
-        }
-    }
+    json frames_array = db_->query(sql);
     
-    // 2. Cache miss: Load from disk outside the lock
-    std::string path = get_index_path(station, product);
-    if (fs::exists(path)) {
+    // Transform to expected format: { "f": [ { "t": timestamp, "e": tilt }, ... ] }
+    // Note: Level II tilt is usually derived from filename or stored separately.
+    // In current schema we store filename. We can parse tilt from filename if needed.
+    
+    json result_frames = json::array();
+    for (const auto& f : frames_array) {
+        float tilt = 0.0f;
         try {
-            std::ifstream file(path, std::ios::binary);
-            if (file) {
-                file.seekg(0, std::ios::end);
-                size_t size = file.tellg();
-                file.seekg(0, std::ios::beg);
-                std::vector<uint8_t> compressed(size);
-                file.read(reinterpret_cast<char*>(compressed.data()), size);
-                file.close();
-                
-                auto decompressed = ZlibUtils::gzip_decompress(compressed.data(), compressed.size());
-                json index = json::parse(std::string(decompressed.begin(), decompressed.end()));
-                
-                // 3. Update the cache with unique lock
-                {
-                    std::unique_lock<std::shared_mutex> lock(index_mutex_);
-                    index_cache_[key] = index;
-                    
-                    auto it = index_lru_map_.find(key);
-                    if (it != index_lru_map_.end()) {
-                        index_lru_list_.erase(it->second);
-                    }
-                    index_lru_list_.push_front(key);
-                    index_lru_map_[key] = index_lru_list_.begin();
-                    
-                    if (index_cache_.size() > MAX_INDEX_CACHE_SIZE) {
-                        std::string oldest_key = index_lru_list_.back();
-                        index_cache_.erase(oldest_key);
-                        index_lru_map_.erase(oldest_key);
-                        index_lru_list_.pop_back();
-                    }
-                }
-                return index;
+            std::string filename = f["f"];
+            if (filename != "volumetric.RDA") {
+                tilt = std::stof(filename.substr(0, filename.find(".RDA")));
             }
-        } catch (...) {
-            // Error loading or parsing, fall through to return empty object
-        }
+        } catch (...) {}
+        result_frames.push_back({{"t", f["t"]}, {"e", tilt}});
     }
+
+    json index = {
+        {"s", station}, {"p", product}, 
+        {"u", std::chrono::system_clock::now().time_since_epoch().count()},
+        {"c", result_frames.size()}, {"f", result_frames}
+    };
     
-    return json::object();
+    return index;
 }
 
 std::vector<FrameStorageManager::FrameMetadata> FrameStorageManager::list_frames(const std::string& station, const std::string& product) const {
-    return scan_directory(station, product);
-}
-
-std::vector<FrameStorageManager::FrameMetadata> FrameStorageManager::scan_directory(const std::string& station, const std::string& product) const {
+    std::string sql = "SELECT * FROM levelii_frames WHERE station = '" + station + "' AND product_name = '" + product + "' ORDER BY timestamp DESC;";
+    json rows = db_->query(sql);
+    
     std::vector<FrameMetadata> frames;
-    std::string station_dir = base_path_ + "/" + station;
-    
-    std::error_code ec;
-    if (!fs::exists(station_dir, ec)) return frames;
-    
-    for (auto it = fs::recursive_directory_iterator(station_dir, ec); it != fs::recursive_directory_iterator(); it.increment(ec)) {
-        if (ec) break;
-        
+    for (const auto& row : rows) {
+        FrameMetadata meta;
+        meta.station = row["station"];
+        meta.product = row["product_name"];
+        meta.timestamp = row["timestamp"];
+        std::string filename = row["filename"];
         try {
-            const auto& entry = *it;
-            if (!entry.is_regular_file(ec)) continue;
-            if (entry.path().extension() != ".RDA") continue;
-            
-            // Path is base_path/station/product/timestamp/tilt.RDA
-            // We only want files for the requested product
-            if (entry.path().parent_path().parent_path().filename().string() != product) continue;
-
-            FrameMetadata meta;
-            meta.station = station;
-            meta.product = product;
-            meta.file_path = entry.path().string();
-            meta.file_size = entry.file_size(ec);
-            if (ec) continue;
-            
-            meta.timestamp = entry.path().parent_path().filename().string();
-            try {
-                meta.tilt = std::stof(entry.path().stem().string());
-            } catch (...) { meta.tilt = 0.0f; }
-            frames.push_back(meta);
-        } catch (...) {
-            continue; // Skip problematic entries
-        }
-    }
-    
-    // Only sort the frames if there are any
-    if (!frames.empty()) {
-        std::sort(frames.begin(), frames.end(), [](const auto& a, const auto& b) { 
-            if (a.timestamp != b.timestamp) return a.timestamp > b.timestamp;
-            return a.tilt < b.tilt;
-        });
+            if (filename != "volumetric.RDA") {
+                meta.tilt = std::stof(filename.substr(0, filename.find(".RDA")));
+            } else {
+                meta.tilt = 0.0f;
+            }
+        } catch (...) { meta.tilt = 0.0f; }
+        
+        meta.file_path = base_path_ + "/" + meta.station + "/" + meta.product + "/" + meta.timestamp + "/" + filename;
+        
+        std::error_code ec;
+        meta.file_size = fs::exists(meta.file_path, ec) ? fs::file_size(meta.file_path, ec) : 0;
+        
+        frames.push_back(meta);
     }
     return frames;
+}
+
+bool FrameStorageManager::has_timestamp_product(const std::string& station, const std::string& product, const std::string& timestamp) const {
+    std::string sql = "SELECT 1 FROM levelii_frames WHERE station = '" + station + 
+                      "' AND product_name = '" + product + "' AND timestamp = '" + timestamp + "' LIMIT 1;";
+    json results = db_->query(sql);
+    return !results.empty();
 }
 
 void FrameStorageManager::cleanup_old_frames(int max_frames_per_station) {
@@ -557,13 +467,13 @@ void FrameStorageManager::cleanup_old_frames(int max_frames_per_station) {
                         
                         // Cleanup empty parent product directory
                         fs::path prod_dir = fs::path(prod_dir).parent_path();
-                        if (fs::exists(prod_dir) && fs::is_directory(prod_dir) && fs::is_empty(prod_dir)) {
+                        if (fs::is_empty(prod_dir)) {
                             fs::remove(prod_dir);
                         }
                     }
                 }
-                update_index(station_entry.path().filename().string(), prod);
             }
+            db_->purge_old_records("levelii_frames", station_entry.path().filename().string(), max_frames_per_station);
         }
         
         // Cleanup empty station directory (no timestamp directories left)
@@ -586,11 +496,6 @@ void FrameStorageManager::cleanup_old_frames(int max_frames_per_station) {
             }
         }
     }
-}
-
-bool FrameStorageManager::has_timestamp_product(const std::string& station, const std::string& product, const std::string& timestamp) const {
-    std::string path = base_path_ + "/" + station + "/" + product + "/" + timestamp;
-    return fs::exists(path) && fs::is_directory(path);
 }
 
 size_t FrameStorageManager::get_total_disk_usage() const {

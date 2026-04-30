@@ -11,6 +11,7 @@ option(ENABLE_TESTING "Build test executables" OFF)
 find_package(CURL REQUIRED)
 find_package(BZip2 REQUIRED)
 find_package(ZLIB REQUIRED)
+find_package(SQLite3 REQUIRED)
 find_package(AWSSDK REQUIRED COMPONENTS s3 core)
 
 # ============================================================================
@@ -37,6 +38,7 @@ target_link_libraries(levelii_DecompressionUtils PUBLIC
 add_library(levelii_FrameStorageManager STATIC
     src/FrameStorageManager.cpp
     src/ZlibUtils.cpp
+    src/DatabaseUtils.cpp
 )
 
 target_include_directories(levelii_FrameStorageManager PUBLIC
@@ -44,7 +46,7 @@ target_include_directories(levelii_FrameStorageManager PUBLIC
     ${ZLIB_INCLUDE_DIRS}
 )
 
-target_link_libraries(levelii_FrameStorageManager PRIVATE stdc++fs ZLIB::ZLIB)
+target_link_libraries(levelii_FrameStorageManager PRIVATE stdc++fs ZLIB::ZLIB SQLite::SQLite3)
 
 # ============================================================================
 # Level II Radar Parser Library

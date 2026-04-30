@@ -1,9 +1,9 @@
 /*
  * Level II Data Fetcher - Standalone background service
- *
+ * 
  * Handles NEXRAD Level II data fetching from AWS S3
  * in a separate process to avoid resource conflicts.
- *
+ * 
  * Run as a separate daemon/service alongside radar_server.
  */
 
@@ -98,17 +98,17 @@ int main(int argc, char* argv[]) {
     } else {
         std::cout << "📡 HTTP server disabled (use --http to enable)" << std::endl;
     }
-
+    
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     signal(SIGHUP, signal_handler);
-
+    
     try {
         std::string base_dir = get_executable_directory();
         std::string level2_data_path;
 
         if (!cmd_data_dir.empty()) {
-            level2_data_path = cmd_data_dir;
+            level2_data_path = cmd_data_dir + "/data/levelii";
         } else {
             level2_data_path = base_dir + "/data/levelii";
         }
@@ -117,14 +117,14 @@ int main(int argc, char* argv[]) {
         std::cout << "   Level II: " << level2_data_path << std::endl;
 
         auto storage_manager = std::make_shared<FrameStorageManager>(level2_data_path);
-
+        
         FrameFetcherConfig fetcher_config;
-
+        
         const char* env_stations = std::getenv("NEXRAD_MONITORED_STATIONS");
         if (env_stations) {
             std::string stations_str(env_stations);
             if (stations_str == "ALL" || stations_str == "*") {
-                fetcher_config.monitored_stations = {"ALL"};
+                fetcher_config.monitored_stations = {"ALL"}; 
                 std::cout << "📡 Monitoring ALL stations (NEXRAD_MONITORED_STATIONS=" << stations_str << ")" << std::endl;
             } else {
                 std::cout << "📡 Monitoring stations: " << stations_str << std::endl;
@@ -148,11 +148,11 @@ int main(int argc, char* argv[]) {
         const char* env_threads = std::getenv("NEXRAD_THREADS");
         if (cmd_threads > 0) fetcher_config.fetcher_thread_pool_size = cmd_threads;
         else if (env_threads) fetcher_config.fetcher_thread_pool_size = std::stoi(env_threads);
-
+        
         const char* env_buffer_count = std::getenv("NEXRAD_BUFFER_COUNT");
         if (cmd_buffer_count > 0) fetcher_config.buffer_pool_size = cmd_buffer_count;
         else if (env_buffer_count) fetcher_config.buffer_pool_size = std::stoi(env_buffer_count);
-
+        
         const char* env_buffer_size = std::getenv("NEXRAD_BUFFER_SIZE_MB");
         if (cmd_buffer_size > 0) fetcher_config.buffer_size = static_cast<size_t>(cmd_buffer_size) * 1024 * 1024;
         else if (env_buffer_size) fetcher_config.buffer_size = static_cast<size_t>(std::stoi(env_buffer_size)) * 1024 * 1024;
@@ -165,12 +165,12 @@ int main(int argc, char* argv[]) {
         fetcher_config.save_individual_tilts = save_individual_tilts;
         fetcher_config.save_volumetric = save_volumetric;
 
-        std::cout << "⚙️  Performance Config: "
+        std::cout << "⚙️  Performance Config: " 
                   << fetcher_config.fetcher_thread_pool_size << " threads, "
                   << fetcher_config.buffer_pool_size << " buffers ("
                   << fetcher_config.buffer_size / (1024 * 1024) << "MB each), "
                   << "catchup=" << (fetcher_config.catchup_enabled ? "on" : "off") << ", "
-                  << "volumetric=ALWAYS_ON (save="
+                  << "volumetric=ALWAYS_ON (save=" 
                   << (fetcher_config.save_volumetric ? "on" : "off") << "), "
                   << "individual_tilts=" << (fetcher_config.save_individual_tilts ? "on" : "off") << std::endl;
         fetcher_config.products = {
@@ -185,13 +185,13 @@ int main(int argc, char* argv[]) {
         fetcher_config.max_frames_per_station = 30;
         fetcher_config.cleanup_interval_seconds = 300;
         fetcher_config.auto_cleanup_enabled = true;
-
+        
         auto frame_fetcher = std::make_shared<BackgroundFrameFetcher>(
-            storage_manager,
-            fetcher_config,
+            storage_manager, 
+            fetcher_config, 
             level2_data_path
         );
-
+        
         std::shared_ptr<AdminServer> admin_server;
         if (use_http) {
             admin_server = std::make_shared<AdminServer>(frame_fetcher, storage_manager, 13480);
@@ -225,12 +225,12 @@ int main(int argc, char* argv[]) {
         }
 
         std::cout << "\n🛑 Shutting down Level II fetcher..." << std::endl;
-
+        
         // 1. Join initialization thread first to ensure initialization is finished
         if (aws_init_thread.joinable()) {
             aws_init_thread.join();
         }
-
+        
         // 2. Shut down admin server (stops web server and API)
         if (admin_server) {
             admin_server->shutdown_all();
@@ -238,16 +238,16 @@ int main(int argc, char* argv[]) {
         }
         frame_fetcher.reset();
         storage_manager.reset();
-
+        
         // 4. Shutdown AWS SDK while we are still in main
         AWSInitializer::instance().shutdown();
-
+        
         std::cout << "✅ Level II Data Fetcher Service stopped cleanly" << std::endl;
-
+        
     } catch (const std::exception& e) {
         std::cerr << "❌ Fatal error: " << e.what() << std::endl;
         return 1;
     }
-
+    
     return 0;
 }
